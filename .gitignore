@@ -1,0 +1,10 @@
+.env
+*.db-journal
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/*.xlsx
+data/*.log
+data/*.db
+!data/.gitkeep

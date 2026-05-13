@@ -1,0 +1,71 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}{{ device.name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h2 class="mb-1">{{ device.name }}</h2>
+    <div class="muted-label">{{ device.ip }} · {{ device.mac }}</div>
+  </div>
+  <a class="btn btn-outline-secondary" href="{% url 'devices' %}">Volver</a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Total enviado</div><div class="value-lg">{{ device.sent_mb }} MB</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Total recibido</div><div class="value-lg">{{ device.received_mb }} MB</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Consumo total</div><div class="value-lg">{{ device.total_mb }} MB</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Última actividad</div><div class="fw-semibold">{{ device.last_activity }}</div></div></div>
+</div>
+
+<section class="panel p-3 mb-4">
+  <div class="row">
+    <div class="col-md-4"><div class="muted-label">Área</div><div>{{ device.area }}</div></div>
+    <div class="col-md-4"><div class="muted-label">Comentario MikroTik</div><div>{{ device.comment }}</div></div>
+    <div class="col-md-2"><div class="muted-label">Active Host Name</div><div>{{ device.active_host_name }}</div></div>
+    <div class="col-md-2"><div class="muted-label">Host Name</div><div>{{ device.host_name }}</div></div>
+  </div>
+</section>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-6"><section class="panel p-3"><h3 class="h5">Tráfico por servicio</h3><div class="chart-box"><canvas id="servicesChart"></canvas></div></section></div>
+  <div class="col-lg-6"><section class="panel p-3"><h3 class="h5">Enviado vs recibido</h3><div class="chart-box"><canvas id="sentReceivedChart"></canvas></div></section></div>
+  <div class="col-lg-6"><section class="panel p-3"><h3 class="h5">Dominios principales</h3><div class="chart-box"><canvas id="domainsChart"></canvas></div></section></div>
+  <div class="col-lg-6"><section class="panel p-3"><h3 class="h5">Actividad por hora</h3><div class="chart-box"><canvas id="hourlyChart"></canvas></div></section></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-4"><section class="panel p-3"><h3 class="h5">Servicios usados</h3><table class="table table-sm"><tbody>{% for row in services %}<tr><td>{{ row.label }}</td><td class="text-end">{{ row.mb }} MB</td></tr>{% empty %}<tr><td>Sin datos</td></tr>{% endfor %}</tbody></table></section></div>
+  <div class="col-lg-4"><section class="panel p-3"><h3 class="h5">Dominios detectados</h3><table class="table table-sm"><tbody>{% for row in domains %}<tr><td>{{ row.domain }}</td><td class="text-end">{{ row.mb }} MB</td></tr>{% empty %}<tr><td>Sin datos</td></tr>{% endfor %}</tbody></table></section></div>
+  <div class="col-lg-4"><section class="panel p-3"><h3 class="h5">IPs destino</h3><table class="table table-sm"><tbody>{% for row in destinations %}<tr><td>{{ row.name }}</td><td class="text-end">{{ row.mb }} MB</td></tr>{% empty %}<tr><td>Sin datos</td></tr>{% endfor %}</tbody></table></section></div>
+</div>
+
+<section class="panel p-3">
+  <h3 class="h5 mb-3">Últimos movimientos</h3>
+  <div class="table-responsive">
+    <table class="table table-sm">
+      <thead><tr><th>Fecha</th><th>Destino</th><th>Dominio</th><th>Servicio</th><th class="text-end">MB</th></tr></thead>
+      <tbody>
+      {% for row in recent_flows %}
+        <tr><td>{{ row.date }}</td><td>{{ row.dst_name }}</td><td>{{ row.domain }}</td><td>{{ row.service }}</td><td class="text-end">{{ row.mb }}</td></tr>
+      {% empty %}
+        <tr><td colspan="5">Sin movimientos todavía</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+const charts = {{ charts_json|safe }};
+function makeChart(id, type, labels, data, label) {
+  new Chart(document.getElementById(id), {
+    type,
+    data: { labels, datasets: [{ label, data, backgroundColor: ['#4f7cff','#2fb344','#f59f00','#e03131','#7048e8','#1098ad','#868e96','#15aabf','#fab005','#12b886'] }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: type !== 'bar' && type !== 'line' } } }
+  });
+}
+makeChart('servicesChart', 'bar', charts.services.labels, charts.services.data, 'MB');
+makeChart('sentReceivedChart', 'doughnut', charts.sent_received.labels, charts.sent_received.data, 'MB');
+makeChart('domainsChart', 'bar', charts.domains.labels, charts.domains.data, 'MB');
+makeChart('hourlyChart', 'line', charts.hourly.labels, charts.hourly.data, 'MB');
+</script>
+{% endblock %}

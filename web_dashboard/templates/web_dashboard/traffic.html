@@ -1,0 +1,34 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}Tráfico identificado{% endblock %}
+{% block content %}
+<h2 class="mb-1">Tráfico identificado</h2>
+<div class="muted-label mb-4">Vista agrupada y entendible de movimientos recientes</div>
+
+<section class="panel p-3 mb-4">
+  <form class="row g-2">
+    <div class="col-md-2"><input class="form-control" type="date" name="from" value="{{ filters.from_date }}"></div>
+    <div class="col-md-2"><input class="form-control" type="date" name="to" value="{{ filters.to_date }}"></div>
+    <div class="col-md-2"><input class="form-control" name="device" value="{{ filters.device }}" placeholder="Dispositivo"></div>
+    <div class="col-md-2"><input class="form-control" name="service" value="{{ filters.service }}" placeholder="Servicio"></div>
+    <div class="col-md-2"><input class="form-control" name="category" value="{{ filters.category }}" placeholder="Categoría"></div>
+    <div class="col-md-2"><input class="form-control" name="method" value="{{ filters.method }}" placeholder="Método"></div>
+    <div class="col-md-10"><input class="form-control" name="dst_ip" value="{{ filters.dst_ip }}" placeholder="IP destino"></div>
+    <div class="col-md-2 d-grid"><button class="btn btn-primary">Filtrar</button></div>
+  </form>
+</section>
+
+<section class="panel p-3">
+  <div class="table-responsive">
+    <table class="table table-hover">
+      <thead><tr><th>Fecha</th><th>Dispositivo</th><th>IP origen</th><th>IP destino</th><th>Dominio detectado</th><th>Servicio detectado</th><th>Categoría</th><th>Método de detección</th><th class="text-end">MB</th><th class="text-end">Flows</th></tr></thead>
+      <tbody>
+      {% for row in rows %}
+        <tr><td>{{ row.date }}</td><td>{{ row.device }}</td><td>{{ row.src_ip }}</td><td>{{ row.dst_ip }}</td><td>{{ row.domain }}</td><td>{{ row.service }}</td><td>{{ row.category }}</td><td>{{ row.method }}</td><td class="text-end">{{ row.mb }}</td><td class="text-end">{{ row.flows }}</td></tr>
+      {% empty %}
+        <tr><td colspan="10">Sin tráfico identificado para estos filtros</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,101 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}Resumen{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h2 class="mb-1">Resumen general</h2>
+    <div class="muted-label">Consumo y actividad de la red</div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Dispositivos</div><div class="value-lg">{{ cards.devices }}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Consumo total</div><div class="value-lg">{{ cards.total_gb }} GB</div><div class="muted-label">{{ cards.total_mb }} MB</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Movimientos</div><div class="value-lg">{{ cards.flows }}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Destinos únicos</div><div class="value-lg">{{ cards.destinations }}</div></div></div>
+</div>
+
+<div class="row g-4 mb-4">
+  <div class="col-lg-7">
+    <section class="panel p-3">
+      <h3 class="h5 mb-3">Tráfico por dispositivo</h3>
+      <div class="chart-box"><canvas id="deviceChart"></canvas></div>
+    </section>
+  </div>
+  <div class="col-lg-5">
+    <section class="panel p-3">
+      <h3 class="h5 mb-3">Servicios más usados</h3>
+      <div class="chart-box"><canvas id="serviceChart"></canvas></div>
+    </section>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <section class="panel p-3">
+      <h3 class="h5 mb-3">Top dispositivos</h3>
+      <div class="table-responsive">
+        <table class="table table-sm">
+          <thead><tr><th>Dispositivo</th><th class="text-end">MB</th></tr></thead>
+          <tbody>
+          {% for row in top_devices %}
+            <tr><td><a href="{% url 'device_detail' row.ip %}">{{ row.name }}</a></td><td class="text-end">{{ row.total_mb }}</td></tr>
+          {% empty %}
+            <tr><td colspan="2">Sin datos todavía</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <div class="col-lg-4">
+    <section class="panel p-3">
+      <h3 class="h5 mb-3">Top servicios</h3>
+      <div class="table-responsive">
+        <table class="table table-sm">
+          <thead><tr><th>Servicio</th><th class="text-end">MB</th></tr></thead>
+          <tbody>
+          {% for row in top_services %}
+            <tr><td>{{ row.label }}</td><td class="text-end">{{ row.mb }}</td></tr>
+          {% empty %}
+            <tr><td colspan="2">Sin datos todavía</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <div class="col-lg-4">
+    <section class="panel p-3">
+      <h3 class="h5 mb-3">Top dominios</h3>
+      <div class="table-responsive">
+        <table class="table table-sm">
+          <thead><tr><th>Dominio</th><th class="text-end">MB</th></tr></thead>
+          <tbody>
+          {% for row in top_domains %}
+            <tr><td>{{ row.domain }}</td><td class="text-end">{{ row.mb }}</td></tr>
+          {% empty %}
+            <tr><td colspan="2">Sin datos DNS o reverse DNS todavía</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+const deviceChart = {{ device_chart_json|safe }};
+const serviceChart = {{ service_chart_json|safe }};
+new Chart(document.getElementById('deviceChart'), {
+  type: 'bar',
+  data: { labels: deviceChart.labels, datasets: [{ label: 'MB', data: deviceChart.data, backgroundColor: '#4f7cff' }] },
+  options: { maintainAspectRatio: false, plugins: { legend: { display: false } } }
+});
+new Chart(document.getElementById('serviceChart'), {
+  type: 'doughnut',
+  data: { labels: serviceChart.labels, datasets: [{ data: serviceChart.data, backgroundColor: ['#4f7cff','#2fb344','#f59f00','#e03131','#7048e8','#1098ad','#868e96'] }] },
+  options: { maintainAspectRatio: false }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}Exportaciones{% endblock %}
+{% block content %}
+<h2 class="mb-1">Exportaciones</h2>
+<div class="muted-label mb-4">Descargas disponibles para análisis administrativo</div>
+
+<section class="panel p-3">
+  <div class="list-group list-group-flush">
+    {% if excel_exists %}
+      <a class="list-group-item list-group-item-action d-flex justify-content-between" href="{% url 'download_excel' %}"><span>Excel actual</span><span>reporte_trafico.xlsx</span></a>
+    {% else %}
+      <div class="list-group-item text-secondary">El Excel todavía no está generado</div>
+    {% endif %}
+    <a class="list-group-item list-group-item-action d-flex justify-content-between" href="{% url 'download_devices_csv' %}"><span>CSV de dispositivos</span><span>dispositivos.csv</span></a>
+    <a class="list-group-item list-group-item-action d-flex justify-content-between" href="{% url 'download_traffic_csv' %}"><span>CSV de tráfico identificado</span><span>trafico_identificado.csv</span></a>
+    <a class="list-group-item list-group-item-action d-flex justify-content-between" href="{% url 'download_dns_csv' %}"><span>CSV de DNS</span><span>{% if dns_available %}dns_por_dispositivo.csv{% else %}sin datos todavía{% endif %}</span></a>
+  </div>
+</section>
+{% endblock %}

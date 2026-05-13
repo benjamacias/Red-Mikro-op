@@ -1,0 +1,59 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}Dispositivos{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h2 class="mb-1">Dispositivos</h2>
+    <div class="muted-label">Equipos detectados por MikroTik, archivo manual y tráfico observado</div>
+  </div>
+</div>
+
+<section class="panel p-3 mb-4">
+  <form class="row g-2">
+    <div class="col-md-7">
+      <input class="form-control" name="q" value="{{ search }}" placeholder="Buscar por nombre, IP, MAC o área">
+    </div>
+    <div class="col-md-3">
+      <select class="form-select" name="sort">
+        <option value="total" {% if sort == "total" %}selected{% endif %}>Ordenar por consumo</option>
+        <option value="last" {% if sort == "last" %}selected{% endif %}>Ordenar por última actividad</option>
+        <option value="name" {% if sort == "name" %}selected{% endif %}>Ordenar por nombre</option>
+      </select>
+    </div>
+    <div class="col-md-2 d-grid"><button class="btn btn-primary">Buscar</button></div>
+  </form>
+</section>
+
+<section class="panel p-3">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+      <tr>
+        <th>Nombre visible</th><th>IP</th><th>MAC</th><th>Área</th>
+        <th class="text-end">MB enviados</th><th class="text-end">MB recibidos</th><th class="text-end">MB total</th>
+        <th class="text-end">Flows</th><th>Servicio principal</th><th>Dominio principal</th><th>Última actividad</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for row in devices %}
+        <tr>
+          <td><a href="{% url 'device_detail' row.ip %}">{{ row.name }}</a></td>
+          <td>{{ row.ip }}</td>
+          <td>{{ row.mac }}</td>
+          <td>{{ row.area }}</td>
+          <td class="text-end">{{ row.sent_mb }}</td>
+          <td class="text-end">{{ row.received_mb }}</td>
+          <td class="text-end fw-semibold">{{ row.total_mb }}</td>
+          <td class="text-end">{{ row.flows }}</td>
+          <td>{{ row.main_service }}</td>
+          <td>{{ row.main_domain }}</td>
+          <td>{{ row.last_activity }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="11">Sin dispositivos todavía</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

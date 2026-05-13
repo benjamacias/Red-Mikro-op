@@ -1,0 +1,26 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}DNS{% endblock %}
+{% block content %}
+<h2 class="mb-1">DNS por dispositivo</h2>
+<div class="muted-label mb-4">Consultas DNS correlacionadas por equipo</div>
+
+{% if not available %}
+<section class="panel p-4">
+  <h3 class="h5">No hay datos DNS disponibles todavía.</h3>
+  <p class="mb-0 text-secondary">NetFlow sigue funcionando, pero para identificar dominios con mayor precisión se recomienda activar DNS logging o AdGuard Home.</p>
+</section>
+{% else %}
+<section class="panel p-3">
+  <div class="table-responsive">
+    <table class="table table-hover">
+      <thead><tr><th>Fecha</th><th>Dispositivo</th><th>IP</th><th>Dominio consultado</th><th>Dominio limpio</th><th>Servicio</th><th>Categoría</th><th class="text-end">Consultas</th><th>Última consulta</th></tr></thead>
+      <tbody>
+      {% for row in rows %}
+        <tr><td>{{ row.date }}</td><td>{{ row.device }}</td><td>{{ row.ip }}</td><td>{{ row.domain }}</td><td>{{ row.clean_domain }}</td><td>{{ row.service }}</td><td>{{ row.category }}</td><td class="text-end">{{ row.queries }}</td><td>{{ row.last_query }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

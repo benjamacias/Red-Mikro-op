@@ -1,0 +1,93 @@
+Conexion API MikroTik para el collector NetFlow
+==============================================
+
+1. Datos de ejemplo
+
+MikroTik:
+192.168.1.254
+
+Servidor Python:
+192.168.1.114
+
+Puerto API normal:
+8728
+
+Puerto API SSL:
+8729
+
+2. Configuracion rapida por terminal MikroTik
+
+Entrar por terminal al MikroTik y ejecutar estos comandos.
+Cambiar TU_CLAVE_SEGURA por una clave real antes de usarlo:
+
+/ip service set api disabled=no port=8728
+/ip service set api address=192.168.1.114/32
+/user group add name=api-read policy=read,api
+/user add name=netflow_reader group=api-read password=TU_CLAVE_SEGURA
+/user set netflow_reader address=192.168.1.114/32
+
+3. Habilitar API en MikroTik por terminal
+
+/ip service set api disabled=no port=8728
+
+4. Restringir API solo al servidor Python
+
+/ip service set api address=192.168.1.114/32
+
+5. Crear grupo solo lectura
+
+/user group add name=api-read policy=read,api
+
+6. Crear usuario API
+
+/user add name=netflow_reader group=api-read password="CAMBIAR_ESTA_CLAVE"
+
+7. Limitar usuario a la IP del servidor
+
+/user set netflow_reader address=192.168.1.114/32
+
+8. Formato de .env.example
+
+MIKROTIK_HOST=192.168.1.254
+MIKROTIK_PORT=8728
+MIKROTIK_USER=netflow_reader
+MIKROTIK_PASSWORD=CAMBIAR_ESTA_CLAVE
+MIKROTIK_USE_SSL=false
+INTERNAL_NETWORKS=192.168.1.0/24
+
+9. Aclaracion importante
+
+No subir el archivo .env real.
+Solo subir .env.example.
+El archivo .env debe quedar unicamente en la maquina local.
+
+10. Probar conectividad desde Windows PowerShell
+
+Test-NetConnection 192.168.1.254 -Port 8728
+
+Resultado esperado:
+
+TcpTestSucceeded : True
+
+11. Errores comunes
+
+- connection refused:
+  API deshabilitada o puerto incorrecto.
+
+- timed out:
+  IP incorrecta, firewall o address restriction mal configurada.
+
+- invalid user name or password:
+  usuario o clave incorrectos.
+
+- MikroTik API no configurada:
+  falta .env, esta mal ubicado o el programa no lo esta leyendo.
+
+12. Seguridad
+
+- No usar usuario admin si no es necesario.
+- Usar usuario solo lectura.
+- Restringir por IP.
+- No exponer API hacia internet.
+- No abrir puerto 8728 en WAN.
+- Usar contraseña distinta a la del admin principal.
