@@ -1,8 +1,12 @@
 {% extends "web_dashboard/base.html" %}
 {% block title %}DNS{% endblock %}
 {% block content %}
-<h2 class="mb-1">DNS por dispositivo</h2>
-<div class="muted-label mb-4">Consultas DNS correlacionadas por equipo</div>
+<div class="d-flex justify-content-between align-items-start mb-4">
+  <div>
+    <h2 class="mb-1">DNS por dispositivo</h2>
+    <div class="muted-label">Solo se muestran equipos identificados y dominios claros</div>
+  </div>
+</div>
 
 {% if not available %}
 <section class="panel p-4">
@@ -10,17 +14,150 @@
   <p class="mb-0 text-secondary">NetFlow sigue funcionando, pero para identificar dominios con mayor precisión se recomienda activar DNS logging o AdGuard Home.</p>
 </section>
 {% else %}
+
+<section class="panel p-3 mb-4">
+  <form class="row g-2 align-items-end">
+    <div class="col-lg-4">
+      <label class="form-label">Buscar</label>
+      <input class="form-control" name="q" value="{{ filters.q }}" placeholder="Dispositivo o dominio">
+    </div>
+    <div class="col-lg-4">
+      <label class="form-label">Dispositivo</label>
+      <select class="form-select" name="device_ip">
+        <option value="">Todos los identificados</option>
+        {% for item in devices %}
+          <option value="{{ item.ip }}" {% if filters.device_ip == item.ip %}selected{% endif %}>{{ item.name }} - {{ item.ip }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-lg-2">
+      <label class="form-label">Desde</label>
+      <input class="form-control" type="date" name="date_from" value="{{ filters.date_from }}">
+    </div>
+    <div class="col-lg-2">
+      <label class="form-label">Hasta</label>
+      <input class="form-control" type="date" name="date_to" value="{{ filters.date_to }}">
+    </div>
+    <div class="col-lg-8">
+      <label class="form-label">Dominio</label>
+      <input class="form-control" name="domain" value="{{ filters.domain }}" placeholder="Ejemplo: whatsapp.net">
+    </div>
+    <div class="col-lg-2 d-grid">
+      <button class="btn btn-primary">Filtrar</button>
+    </div>
+    <div class="col-lg-2 d-grid">
+      <a class="btn btn-outline-secondary" href="{% url 'dns' %}">Limpiar</a>
+    </div>
+  </form>
+</section>
+
+{% if detail %}
+<section class="panel p-3 mb-4">
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h3 class="h5 mb-1">Detalle DNS del dispositivo</h3>
+      <div class="muted-label">Actividad del equipo seleccionado</div>
+    </div>
+    <a class="btn btn-sm btn-outline-secondary" href="{% url 'dns' %}">Ver todos</a>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Dispositivo</div><div class="fw-semibold">{{ detail.device.name }}</div><div class="muted-label">{{ detail.device.ip }}</div></div></div>
+    <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">MAC / host</div><div class="fw-semibold">{{ detail.device.mac|default:"Sin dato" }}</div><div class="muted-label">{{ detail.device.hostname|default:"Sin hostname" }}</div></div></div>
+    <div class="col-md-2"><div class="card summary-card p-3"><div class="muted-label">Consultas</div><div class="value-lg">{{ detail.summary.total_queries }}</div></div></div>
+    <div class="col-md-2"><div class="card summary-card p-3"><div class="muted-label">Sitios únicos</div><div class="value-lg">{{ detail.summary.unique_domains }}</div></div></div>
+    <div class="col-md-2"><div class="card summary-card p-3"><div class="muted-label">Última</div><div class="fw-semibold">{{ detail.summary.last_seen|default:"Sin datos" }}</div></div></div>
+  </div>
+
+  {% if detail.empty_message %}
+    <div class="alert alert-info mb-0">{{ detail.empty_message }}</div>
+  {% else %}
+    <div class="row g-4">
+      <div class="col-lg-4">
+        <h4 class="h6">Sitios más consultados</h4>
+        <table class="table table-sm">
+          <thead><tr><th>Sitio</th><th class="text-end">Consultas</th></tr></thead>
+          <tbody>
+          {% for row in detail.top_domains %}
+            <tr><td>{{ row.clean_domain }}</td><td class="text-end">{{ row.queries }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="col-lg-4">
+        <h4 class="h6">Últimas consultas</h4>
+        <table class="table table-sm">
+          <thead><tr><th>Fecha</th><th>Sitio</th></tr></thead>
+          <tbody>
+          {% for row in detail.latest_queries %}
+            <tr><td>{{ row.date }}</td><td>{{ row.clean_domain }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="col-lg-4">
+        <h4 class="h6">Categorías</h4>
+        <table class="table table-sm">
+          <thead><tr><th>Categoría</th><th class="text-end">Consultas</th></tr></thead>
+          <tbody>
+          {% for row in detail.top_categories %}
+            <tr><td>{{ row.category }}</td><td class="text-end">{{ row.queries }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="panel p-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="h5 mb-0">Consultas DNS</h3>
+    <div class="muted-label">{{ page_obj.paginator.count }} filas</div>
+  </div>
   <div class="table-responsive">
     <table class="table table-hover">
-      <thead><tr><th>Fecha</th><th>Dispositivo</th><th>IP</th><th>Dominio consultado</th><th>Dominio limpio</th><th>Servicio</th><th>Categoría</th><th class="text-end">Consultas</th><th>Última consulta</th></tr></thead>
+      <thead>
+      <tr>
+        <th>Fecha</th>
+        <th>Dispositivo</th>
+        <th>Sitio</th>
+        <th>Categoría</th>
+        <th class="text-end">Consultas</th>
+        <th>Última consulta</th>
+      </tr>
+      </thead>
       <tbody>
       {% for row in rows %}
-        <tr><td>{{ row.date }}</td><td>{{ row.device }}</td><td>{{ row.ip }}</td><td>{{ row.domain }}</td><td>{{ row.clean_domain }}</td><td>{{ row.service }}</td><td>{{ row.category }}</td><td class="text-end">{{ row.queries }}</td><td>{{ row.last_query }}</td></tr>
+        <tr>
+          <td>{{ row.date }}</td>
+          <td><a href="?device_ip={{ row.ip }}">{{ row.device }}</a></td>
+          <td>{{ row.clean_domain }}</td>
+          <td>{{ row.category }}</td>
+          <td class="text-end">{{ row.queries }}</td>
+          <td>{{ row.last_query }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6">No hay consultas DNS claras para estos filtros.</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
+
+  {% if page_obj.paginator.num_pages > 1 %}
+  <nav class="mt-3">
+    <ul class="pagination pagination-sm mb-0">
+      {% if page_obj.has_previous %}
+        <li class="page-item"><a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Anterior</a></li>
+      {% endif %}
+      <li class="page-item active"><span class="page-link">{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}</span></li>
+      {% if page_obj.has_next %}
+        <li class="page-item"><a class="page-link" href="?{% if querystring %}{{ querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Siguiente</a></li>
+      {% endif %}
+    </ul>
+  </nav>
+  {% endif %}
 </section>
 {% endif %}
 {% endblock %}

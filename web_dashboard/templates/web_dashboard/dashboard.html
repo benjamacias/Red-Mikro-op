@@ -4,36 +4,36 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
   <div>
     <h2 class="mb-1">Resumen general</h2>
-    <div class="muted-label">Consumo y actividad de la red</div>
+    <div class="muted-label">Vista simple de consumo y actividad identificada</div>
   </div>
 </div>
 
 <div class="row g-3 mb-4">
-  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Dispositivos</div><div class="value-lg">{{ cards.devices }}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Dispositivos identificados</div><div class="value-lg">{{ cards.devices }}</div></div></div>
   <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Consumo total</div><div class="value-lg">{{ cards.total_gb }} GB</div><div class="muted-label">{{ cards.total_mb }} MB</div></div></div>
   <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Movimientos</div><div class="value-lg">{{ cards.flows }}</div></div></div>
-  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Destinos únicos</div><div class="value-lg">{{ cards.destinations }}</div></div></div>
+  <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Destinos detectados</div><div class="value-lg">{{ cards.destinations }}</div></div></div>
 </div>
 
 <div class="row g-4 mb-4">
   <div class="col-lg-7">
     <section class="panel p-3">
-      <h3 class="h5 mb-3">Tráfico por dispositivo</h3>
+      <h3 class="h5 mb-3">Consumo por dispositivo</h3>
       <div class="chart-box"><canvas id="deviceChart"></canvas></div>
     </section>
   </div>
   <div class="col-lg-5">
     <section class="panel p-3">
-      <h3 class="h5 mb-3">Servicios más usados</h3>
+      <h3 class="h5 mb-3">Tipos de tráfico</h3>
       <div class="chart-box"><canvas id="serviceChart"></canvas></div>
     </section>
   </div>
 </div>
 
 <div class="row g-4">
-  <div class="col-lg-4">
+  <div class="col-lg-6">
     <section class="panel p-3">
-      <h3 class="h5 mb-3">Top dispositivos</h3>
+      <h3 class="h5 mb-3">Dispositivos con más consumo</h3>
       <div class="table-responsive">
         <table class="table table-sm">
           <thead><tr><th>Dispositivo</th><th class="text-end">MB</th></tr></thead>
@@ -41,41 +41,24 @@
           {% for row in top_devices %}
             <tr><td><a href="{% url 'device_detail' row.ip %}">{{ row.name }}</a></td><td class="text-end">{{ row.total_mb }}</td></tr>
           {% empty %}
-            <tr><td colspan="2">Sin datos todavía</td></tr>
+            <tr><td colspan="2">Sin dispositivos identificados todavía</td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
     </section>
   </div>
-  <div class="col-lg-4">
+  <div class="col-lg-6">
     <section class="panel p-3">
-      <h3 class="h5 mb-3">Top servicios</h3>
+      <h3 class="h5 mb-3">Sitios principales</h3>
       <div class="table-responsive">
         <table class="table table-sm">
-          <thead><tr><th>Servicio</th><th class="text-end">MB</th></tr></thead>
-          <tbody>
-          {% for row in top_services %}
-            <tr><td>{{ row.label }}</td><td class="text-end">{{ row.mb }}</td></tr>
-          {% empty %}
-            <tr><td colspan="2">Sin datos todavía</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-  <div class="col-lg-4">
-    <section class="panel p-3">
-      <h3 class="h5 mb-3">Top dominios</h3>
-      <div class="table-responsive">
-        <table class="table table-sm">
-          <thead><tr><th>Dominio</th><th class="text-end">MB</th></tr></thead>
+          <thead><tr><th>Sitio</th><th class="text-end">MB</th></tr></thead>
           <tbody>
           {% for row in top_domains %}
             <tr><td>{{ row.domain }}</td><td class="text-end">{{ row.mb }}</td></tr>
           {% empty %}
-            <tr><td colspan="2">Sin datos DNS o reverse DNS todavía</td></tr>
+            <tr><td colspan="2">Sin sitios identificados todavía</td></tr>
           {% endfor %}
           </tbody>
         </table>

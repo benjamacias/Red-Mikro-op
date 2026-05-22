@@ -91,3 +91,20 @@ TcpTestSucceeded : True
 - No exponer API hacia internet.
 - No abrir puerto 8728 en WAN.
 - Usar contraseña distinta a la del admin principal.
+
+13. DNS logging hacia Python
+
+Para que el dashboard pueda identificar dominios, enviar logs DNS por Syslog
+al servidor Python 192.168.1.114 en UDP 5514:
+
+/system logging action add name=remotePython target=remote remote=192.168.1.114 remote-port=5514 remote-log-format=syslog syslog-time-format=bsd-syslog
+/system logging add topics=dns action=remotePython
+
+Verificar:
+
+/system logging print
+/system logging action print
+
+En Windows abrir firewall:
+
+New-NetFirewallRule -DisplayName "MikroTik DNS Syslog UDP 5514" -Direction Inbound -Protocol UDP -LocalPort 5514 -Action Allow

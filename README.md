@@ -12,6 +12,7 @@ Herramienta local para recibir NetFlow v9 desde MikroTik, guardar historial en S
 - `data/netflow.db`: base SQLite usada por collector y dashboard.
 - `data/reporte_trafico.xlsx`: Excel generado por el collector.
 - `docs/mikrotik_api_connection.txt`: guía para habilitar y probar API MikroTik.
+- `docs/instalacion_completa_desde_cero.md`: instalación completa en un entorno nuevo.
 
 ## Instalación
 
@@ -40,6 +41,9 @@ DJANGO_DEBUG=true
 DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.1.114
 DATABASE_PATH=data/netflow.db
 EXCEL_PATH=data/reporte_trafico.xlsx
+DNS_SYSLOG_ENABLED=true
+DNS_SYSLOG_HOST=0.0.0.0
+DNS_SYSLOG_PORT=5514
 ```
 
 No subir `.env` al repositorio. Debe quedar solo en la máquina local.
@@ -53,6 +57,7 @@ python main.py
 El collector:
 
 - escucha NetFlow v9 en `0.0.0.0:2055/UDP`
+- escucha DNS Syslog en `0.0.0.0:5514/UDP`
 - guarda flows en `data/netflow.db`
 - sincroniza nombres desde DHCP Leases de MikroTik
 - actualiza `data/reporte_trafico.xlsx` cada 60 segundos
@@ -143,6 +148,26 @@ Prioridad para destino:
 4. IP only
 
 Si no hay datos DNS todavía, NetFlow sigue funcionando. El dashboard mostrará IP o reverse DNS cuando exista.
+
+## DNS logging MikroTik
+
+Tu MikroTik debe enviar los logs DNS al servidor Python en UDP `5514`.
+
+Configuración esperada en RouterOS:
+
+```routeros
+/system logging action add name=remotePython target=remote remote=192.168.1.114 remote-port=5514 remote-log-format=syslog syslog-time-format=bsd-syslog
+/system logging add topics=dns action=remotePython
+```
+
+Verificación:
+
+```routeros
+/system logging print
+/system logging action print
+```
+
+En Windows debe existir una regla de firewall para UDP `5514`.
 
 ## Dashboard
 

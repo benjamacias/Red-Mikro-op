@@ -3,9 +3,11 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import sqlite3
 import ssl
+import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -70,6 +72,8 @@ MIKROTIK_SYNC_INTERVAL_SECONDS = 5 * 60
 MAX_FLOWS_IN_EXCEL = 10000
 RETRY_PACKET_TIMEOUT_SECONDS = 60 * 60
 DNS_RETRY_SECONDS = 24 * 60 * 60
+DNS_SYSLOG_HOST = os.getenv("DNS_SYSLOG_HOST", "0.0.0.0")
+DNS_SYSLOG_PORT = int(os.getenv("DNS_SYSLOG_PORT", "5514"))
 
 SERVICE_PORTS = {
     80: "HTTP",
@@ -83,6 +87,17 @@ SERVICE_PORTS = {
     22: "SSH",
     21: "FTP",
     123: "NTP",
+}
+
+KNOWN_DESTINATION_PATTERNS = {
+    "Instagram": ["instagram.com", "cdninstagram.com", "igcdn.com", "ig-dgw", "instagram", "fbcdn.net"],
+    "Facebook": ["facebook.com", "fb.com", "fbcdn.net", "fbsbx.com", "messenger.com", "whatsapp"],
+    "Telegram": ["telegram.org", "telegram.me", "telegram-cdn.org", "t.me", "tdesktop.com"],
+    "ChatGPT": ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+    "Claude": ["claude.ai", "anthropic.com"],
+    "YouTube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be"],
+    "TikTok": ["tiktok.com", "tiktokv.com", "tiktokcdn.com", "ttdns", "byteoversea", "bytegoofy"],
+    "X / Twitter": ["twitter.com", "x.com", "twimg.com", "t.co"],
 }
 
 DEVICE_CSV_EXAMPLE = """ip,nombre,area
@@ -232,6 +247,30 @@ def init_db() -> None:
                 error TEXT
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dns_queries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at TEXT NOT NULL,
+                router_ip TEXT,
+                ip TEXT,
+                domain TEXT,
+                clean_domain TEXT,
+                answer_ip TEXT,
+                record_type TEXT,
+                service TEXT NOT NULL DEFAULT 'DNS',
+                category TEXT,
+                raw_message TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dns_queries_ip ON dns_queries(ip)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dns_queries_domain ON dns_queries(domain)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dns_queries_answer_ip ON dns_queries(answer_ip)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dns_queries_received_at ON dns_queries(received_at)"
         )
         conn.commit()
 
@@ -496,6 +535,156 @@ def device_area(ip: str, devices: dict[str, dict[str, str]]) -> str:
 
 def device_mac(ip: str, devices: dict[str, dict[str, str]]) -> str:
     return normalize_spaces(devices.get(ip, {}).get("mac"))
+
+
+DNS_ANSWER_RE = re.compile(
+    r"<(?P<domain>[A-Za-z0-9_.-]+\.)?:(?P<type>[A-Z0-9-]+):(?P<ttl>\d+)=(?P<answer>[0-9a-fA-F:.]+)>"
+)
+DNS_DOMAIN_RE = re.compile(r"<(?P<domain>[A-Za-z0-9_.-]+)\.:(?P<type>[A-Z0-9-]+):")
+DNS_QUERY_FROM_RE = re.compile(
+    r"(?:dns(?:,\w+)*\s+)?query from (?P<client_ip>(?:\d{1,3}\.){3}\d{1,3})"
+    r"(?::\d+)?\s*:?\s+#?\d*\s+(?P<domain>[A-Za-z0-9_.-]+)\.?\s+(?P<type>[A-Z0-9-]+)",
+    re.IGNORECASE,
+)
+IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def clean_domain_name(value: str) -> str:
+    domain = normalize_spaces(value).strip(".").lower()
+    if not domain:
+        return ""
+    parts = [part for part in domain.split(".") if part]
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
+
+def dns_category(domain: str) -> str:
+    domain = domain.lower()
+    if any(word in domain for word in ["google", "youtube", "facebook", "instagram", "whatsapp"]):
+        return "Internet"
+    if any(word in domain for word in ["office", "microsoft", "outlook", "live.com"]):
+        return "Trabajo"
+    return "DNS"
+
+
+def extract_internal_ip_from_text(text: str, internal_networks: list[ipaddress._BaseNetwork]) -> str:
+    for raw_ip in IP_RE.findall(text):
+        ip = normalize_ip(raw_ip)
+        if ip and is_internal_ip(ip, internal_networks):
+            return ip
+    return ""
+
+
+def parse_dns_syslog_message(
+    raw_message: str,
+    router_ip: str,
+    internal_networks: list[ipaddress._BaseNetwork],
+) -> dict[str, str] | None:
+    message = raw_message.strip()
+    if "dns" not in message.lower() and "query from" not in message.lower():
+        return None
+
+    client_ip = extract_internal_ip_from_text(message, internal_networks)
+    domain = ""
+    answer_ip = ""
+    record_type = ""
+
+    query_match = DNS_QUERY_FROM_RE.search(message)
+    if query_match:
+        client_ip = normalize_ip(query_match.group("client_ip")) or client_ip
+        domain = normalize_spaces(query_match.group("domain")).strip(".")
+        record_type = normalize_spaces(query_match.group("type")).upper()
+    answer_match = DNS_ANSWER_RE.search(message)
+    if answer_match:
+        domain = normalize_spaces(answer_match.group("domain")).strip(".")
+        answer_ip = normalize_ip(answer_match.group("answer")) or ""
+        record_type = normalize_spaces(answer_match.group("type"))
+    elif not query_match:
+        domain_match = DNS_DOMAIN_RE.search(message)
+        if domain_match:
+            domain = normalize_spaces(domain_match.group("domain")).strip(".")
+            record_type = normalize_spaces(domain_match.group("type"))
+
+    if not domain and not answer_ip:
+        return None
+
+    clean_domain = clean_domain_name(domain)
+    return {
+        "received_at": now_text(),
+        "router_ip": router_ip,
+        "ip": client_ip,
+        "domain": domain,
+        "clean_domain": clean_domain,
+        "answer_ip": answer_ip,
+        "record_type": record_type,
+        "service": "DNS",
+        "category": dns_category(clean_domain or domain),
+        "raw_message": message,
+        "created_at": now_text(),
+    }
+
+
+def save_dns_query(item: dict[str, str]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO dns_queries (
+                received_at, router_ip, ip, domain, clean_domain, answer_ip,
+                record_type, service, category, raw_message, created_at
+            )
+            VALUES (
+                :received_at, :router_ip, :ip, :domain, :clean_domain, :answer_ip,
+                :record_type, :service, :category, :raw_message, :created_at
+            )
+            """,
+            item,
+        )
+        if item.get("answer_ip") and item.get("domain"):
+            conn.execute(
+                """
+                INSERT INTO dns_cache (ip, hostname, resolved_at, error)
+                VALUES (?, ?, ?, NULL)
+                ON CONFLICT(ip) DO UPDATE SET
+                    hostname = excluded.hostname,
+                    resolved_at = excluded.resolved_at,
+                    error = NULL
+                """,
+                (item["answer_ip"], item["domain"], now_text()),
+            )
+        conn.commit()
+
+
+def run_dns_syslog_receiver(internal_networks: list[ipaddress._BaseNetwork]) -> None:
+    if not is_truthy(os.getenv("DNS_SYSLOG_ENABLED", "true")):
+        logging.info("DNS Syslog deshabilitado por DNS_SYSLOG_ENABLED=false")
+        return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((DNS_SYSLOG_HOST, DNS_SYSLOG_PORT))
+        logging.info("Escuchando DNS Syslog en %s:%s UDP", DNS_SYSLOG_HOST, DNS_SYSLOG_PORT)
+        while True:
+            payload, client = sock.recvfrom(8192)
+            raw_message = payload.decode("utf-8", errors="replace")
+            item = parse_dns_syslog_message(raw_message, client[0], internal_networks)
+            if item:
+                save_dns_query(item)
+                logging.debug(
+                    "DNS Syslog guardado: %s -> %s",
+                    item.get("ip") or client[0],
+                    item.get("domain") or item.get("answer_ip"),
+                )
+    except OSError as exc:
+        logging.warning(
+            "No pude abrir DNS Syslog UDP %s. Verificar si el puerto ya esta en uso: %s",
+            DNS_SYSLOG_PORT,
+            exc,
+        )
+    except Exception as exc:
+        logging.exception("Error en receptor DNS Syslog: %s", exc)
+    finally:
+        sock.close()
 
 
 class ReverseDNSCache:
@@ -787,6 +976,14 @@ def fetch_one(query: str, params: tuple[Any, ...] = ()) -> sqlite3.Row:
         return conn.execute(query, params).fetchone()
 
 
+def table_exists(name: str) -> bool:
+    row = fetch_one(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    )
+    return bool(row)
+
+
 def fetch_all_flows() -> list[sqlite3.Row]:
     return fetch_rows(
         """
@@ -815,7 +1012,79 @@ def fetch_summary() -> sqlite3.Row:
 
 def load_dns_cache() -> dict[str, str]:
     rows = fetch_rows("SELECT ip, hostname FROM dns_cache WHERE hostname IS NOT NULL")
-    return {row["ip"]: row["hostname"] for row in rows}
+    dns_names = {row["ip"]: row["hostname"] for row in rows}
+    dns_query_rows = fetch_rows(
+        """
+        SELECT answer_ip AS ip, domain AS hostname
+        FROM dns_queries
+        WHERE answer_ip IS NOT NULL AND answer_ip != ''
+          AND domain IS NOT NULL AND domain != ''
+        """
+    ) if table_exists("dns_queries") else []
+    for row in dns_query_rows:
+        dns_names.setdefault(row["ip"], row["hostname"])
+    return dns_names
+
+
+def detect_known_destination(hostname: str) -> str:
+    value = hostname.lower()
+    for platform, patterns in KNOWN_DESTINATION_PATTERNS.items():
+        if any(domain_pattern_matches(value, pattern) for pattern in patterns):
+            if platform == "Instagram" and "whatsapp" in value:
+                continue
+            return platform
+    return ""
+
+
+def domain_pattern_matches(hostname: str, pattern: str) -> bool:
+    pattern = pattern.lower()
+    if "." in pattern:
+        return hostname == pattern or hostname.endswith("." + pattern)
+    return pattern in hostname
+
+
+def known_destination_rows(
+    destination_rows: list[sqlite3.Row], dns_names: dict[str, str]
+) -> list[tuple[Any, ...]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in destination_rows:
+        hostname = dns_names.get(row["dst_ip"], "")
+        platform = detect_known_destination(hostname)
+        if not platform:
+            continue
+        key = platform
+        grouped.setdefault(
+            key,
+            {
+                "platform": platform,
+                "hostnames": set(),
+                "ips": set(),
+                "bytes": 0,
+                "packets": 0,
+                "flows": 0,
+            },
+        )
+        grouped[key]["hostnames"].add(hostname)
+        grouped[key]["ips"].add(row["dst_ip"])
+        grouped[key]["bytes"] += row["bytes"]
+        grouped[key]["packets"] += row["packets"]
+        grouped[key]["flows"] += row["flows"]
+
+    rows = sorted(grouped.values(), key=lambda item: item["bytes"], reverse=True)
+    return [
+        (
+            item["platform"],
+            ", ".join(sorted(item["hostnames"])[:10]),
+            ", ".join(sorted(item["ips"])[:5]),
+            item["bytes"],
+            mb(item["bytes"]),
+            human_bytes(item["bytes"]),
+            item["packets"],
+            item["flows"],
+        )
+        for item in rows
+    ]
 
 
 def principal_destination(ip: str, devices: dict[str, dict[str, str]], dns_names: dict[str, str]) -> str:
@@ -1055,20 +1324,8 @@ def generate_excel(stats: Stats, internal_networks: list[ipaddress._BaseNetwork]
     ws = wb.create_sheet("Top destinos")
     append_rows(
         ws,
-        ["Destino", "IP destino", "DNS destino", "Bytes", "MB", "Bytes legibles", "Packets", "Flows"],
-        [
-            (
-                device_name(row["dst_ip"], devices, dns_names=dns_names, internal_networks=internal_networks),
-                row["dst_ip"],
-                dns_names.get(row["dst_ip"], ""),
-                row["bytes"],
-                mb(row["bytes"]),
-                human_bytes(row["bytes"]),
-                row["packets"],
-                row["flows"],
-            )
-            for row in destination_rows
-        ],
+        ["Destino", "DNS asociados", "IPs detectadas", "Bytes", "MB", "Bytes legibles", "Packets", "Flows"],
+        known_destination_rows(destination_rows, dns_names),
     )
 
     ws = wb.create_sheet("Top servicios")
@@ -1192,6 +1449,13 @@ def run_collector(internal_networks: list[ipaddress._BaseNetwork]) -> None:
     stats.last_mikrotik_sync_at = time.time()
     dns_cache = ReverseDNSCache(DB_PATH)
     sync_executor = ThreadPoolExecutor(max_workers=1)
+    dns_thread = threading.Thread(
+        target=run_dns_syslog_receiver,
+        args=(internal_networks,),
+        daemon=True,
+        name="dns-syslog-receiver",
+    )
+    dns_thread.start()
     templates: dict[str, dict[Any, Any]] = {"netflow": {}, "ipfix": {}}
     retry_packets: list[tuple[float, tuple[str, int], bytes]] = []
 

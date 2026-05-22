@@ -20,6 +20,8 @@
     .muted-label { color: #6b7788; font-size: .85rem; }
     .value-lg { font-size: 1.55rem; font-weight: 700; }
     .chart-box { height: 280px; }
+    .brand-title { display: inline-flex; align-items: baseline; gap: .4rem; }
+    .brand-evolving { color: #aeb8c7; font-size: .68rem; font-weight: 500; transform: translateY(.18rem); }
     @media (max-width: 900px) {
       .app-shell { display: block; }
       .sidebar { width: 100%; }
@@ -30,7 +32,7 @@
 <body>
 <div class="app-shell">
   <aside class="sidebar p-3">
-    <h1 class="h5 mb-4">NetFlow</h1>
+    <h1 class="h5 mb-4 brand-title">NetFlow <span class="brand-evolving">evolving</span></h1>
     <nav>
       <a href="{% url 'dashboard' %}">Resumen</a>
       <a href="{% url 'devices' %}">Dispositivos</a>

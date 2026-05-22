@@ -1,6 +1,7 @@
 import json
 
-from django.http import FileResponse, Http404, HttpResponse
+from django.core.paginator import Paginator
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
 
 from . import services
@@ -56,8 +57,51 @@ def traffic(request):
 
 
 def dns(request):
-    rows, available = services.dns_rows()
-    return render(request, "web_dashboard/dns.html", {"rows": rows, "available": available})
+    filters = {
+        "q": request.GET.get("q", "").strip(),
+        "device": request.GET.get("device", "").strip(),
+        "device_ip": request.GET.get("device_ip", "").strip(),
+        "domain": request.GET.get("domain", "").strip(),
+        "clean_domain": request.GET.get("clean_domain", "").strip(),
+        "category": request.GET.get("category", "").strip(),
+        "service": request.GET.get("service", "").strip(),
+        "date_from": request.GET.get("date_from", "").strip(),
+        "date_to": request.GET.get("date_to", "").strip(),
+    }
+    data = services.dns_page_data(filters)
+    paginator = Paginator(data["rows"], 50)
+    page_obj = paginator.get_page(request.GET.get("page", "1"))
+    query = request.GET.copy()
+    query.pop("page", None)
+    return render(
+        request,
+        "web_dashboard/dns.html",
+        {
+            **data,
+            "rows": page_obj.object_list,
+            "page_obj": page_obj,
+            "querystring": query.urlencode(),
+            "detail_json": json.dumps(data["detail"] or {}),
+        },
+    )
+
+
+def dns_summary(request):
+    filters = {
+        "q": request.GET.get("q", "").strip(),
+        "device": request.GET.get("device", "").strip(),
+        "device_ip": request.GET.get("device_ip", "").strip(),
+        "domain": request.GET.get("domain", "").strip(),
+        "clean_domain": request.GET.get("clean_domain", "").strip(),
+        "category": request.GET.get("category", "").strip(),
+        "service": request.GET.get("service", "").strip(),
+        "date_from": request.GET.get("date_from", "").strip(),
+        "date_to": request.GET.get("date_to", "").strip(),
+    }
+    detail = services.dns_device_detail(filters)
+    if not detail:
+        return JsonResponse({"detail": None, "message": "No hay dispositivo seleccionado"})
+    return JsonResponse(detail)
 
 
 def exports(request):
