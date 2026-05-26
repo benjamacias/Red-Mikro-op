@@ -69,6 +69,7 @@ En otra consola:
 
 ```powershell
 python manage.py migrate
+python manage.py createsuperuser
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -78,6 +79,14 @@ Entrar desde el navegador:
 - `http://192.168.1.114:8000`
 
 El dashboard es solo visualizador y exportador. Lee la misma base `data/netflow.db` sin duplicar datos.
+
+El dashboard requiere inicio de sesión. Crear el usuario administrador con:
+
+```powershell
+python manage.py createsuperuser
+```
+
+Luego entrar en `/login/` o directamente a `/`; si no hay sesión activa, Django redirige al login.
 
 ## Configurar MikroTik Traffic Flow
 

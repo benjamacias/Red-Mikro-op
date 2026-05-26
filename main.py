@@ -538,15 +538,28 @@ def device_mac(ip: str, devices: dict[str, dict[str, str]]) -> str:
 
 
 DNS_ANSWER_RE = re.compile(
-    r"<(?P<domain>[A-Za-z0-9_.-]+\.)?:(?P<type>[A-Z0-9-]+):(?P<ttl>\d+)=(?P<answer>[0-9a-fA-F:.]+)>"
+    r"<(?P<domain>[A-Za-z0-9_.-]+)\.:(?P<type>[A-Z0-9 ()-]+):(?P<ttl>\d+)=(?P<answer>[0-9a-fA-F:.]+)>",
+    re.IGNORECASE,
 )
-DNS_DOMAIN_RE = re.compile(r"<(?P<domain>[A-Za-z0-9_.-]+)\.:(?P<type>[A-Z0-9-]+):")
+DNS_DOMAIN_RE = re.compile(
+    r"<(?P<domain>[A-Za-z0-9_.-]+)\.:(?P<type>[A-Z0-9 ()-]+):",
+    re.IGNORECASE,
+)
 DNS_QUERY_FROM_RE = re.compile(
-    r"(?:dns(?:,\w+)*\s+)?query from (?P<client_ip>(?:\d{1,3}\.){3}\d{1,3})"
-    r"(?::\d+)?\s*:?\s+#?\d*\s+(?P<domain>[A-Za-z0-9_.-]+)\.?\s+(?P<type>[A-Z0-9-]+)",
+    r"(?:dns(?:,\w+)*\s+)?query from (?P<client_ip>(?:\d{1,3}\.){3}\d{1,3}):\s+#(?P<query_id>\d+)\s+"
+    r"(?P<domain>[A-Za-z0-9_.-]+)\.?\s+(?P<type>[A-Z0-9 ()-]+)",
+    re.IGNORECASE,
+)
+DNS_CLIENT_LINE_RE = re.compile(
+    r"(?:got query from|sending reply to)\s+(?P<client_ip>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)",
+    re.IGNORECASE,
+)
+DNS_QUESTION_RE = re.compile(
+    r"question:\s+(?P<domain>[^:\s]+)\.:(?P<type>[^:]+):IN",
     re.IGNORECASE,
 )
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+DNS_PENDING_CLIENTS: dict[str, dict[str, Any]] = {}
 
 
 def clean_domain_name(value: str) -> str:
@@ -576,37 +589,34 @@ def extract_internal_ip_from_text(text: str, internal_networks: list[ipaddress._
     return ""
 
 
-def parse_dns_syslog_message(
-    raw_message: str,
+def normalize_dns_record_type(value: str) -> str:
+    record_type = normalize_spaces(value).upper()
+    if record_type == "UNKNOWN (65)":
+        return "HTTPS"
+    return record_type
+
+
+def build_dns_query_item(
     router_ip: str,
+    client_ip: str,
+    domain: str,
+    record_type: str,
+    raw_message: str,
     internal_networks: list[ipaddress._BaseNetwork],
 ) -> dict[str, str] | None:
-    message = raw_message.strip()
-    if "dns" not in message.lower() and "query from" not in message.lower():
+    client_ip = normalize_ip(client_ip) or ""
+    domain = normalize_spaces(domain).strip(".")
+    record_type = normalize_dns_record_type(record_type)
+
+    if not client_ip:
         return None
-
-    client_ip = extract_internal_ip_from_text(message, internal_networks)
-    domain = ""
-    answer_ip = ""
-    record_type = ""
-
-    query_match = DNS_QUERY_FROM_RE.search(message)
-    if query_match:
-        client_ip = normalize_ip(query_match.group("client_ip")) or client_ip
-        domain = normalize_spaces(query_match.group("domain")).strip(".")
-        record_type = normalize_spaces(query_match.group("type")).upper()
-    answer_match = DNS_ANSWER_RE.search(message)
-    if answer_match:
-        domain = normalize_spaces(answer_match.group("domain")).strip(".")
-        answer_ip = normalize_ip(answer_match.group("answer")) or ""
-        record_type = normalize_spaces(answer_match.group("type"))
-    elif not query_match:
-        domain_match = DNS_DOMAIN_RE.search(message)
-        if domain_match:
-            domain = normalize_spaces(domain_match.group("domain")).strip(".")
-            record_type = normalize_spaces(domain_match.group("type"))
-
-    if not domain and not answer_ip:
+    if not is_internal_ip(client_ip, internal_networks):
+        return None
+    if not domain:
+        return None
+    if record_type in {"ALL", "ANY"}:
+        return None
+    if record_type.startswith("UNKNOWN") and record_type != "HTTPS":
         return None
 
     clean_domain = clean_domain_name(domain)
@@ -616,16 +626,100 @@ def parse_dns_syslog_message(
         "ip": client_ip,
         "domain": domain,
         "clean_domain": clean_domain,
-        "answer_ip": answer_ip,
+        "answer_ip": "",
         "record_type": record_type,
         "service": "DNS",
         "category": dns_category(clean_domain or domain),
-        "raw_message": message,
+        "raw_message": raw_message,
         "created_at": now_text(),
     }
 
 
+def parse_dns_syslog_message(
+    raw_message: str,
+    router_ip: str,
+    internal_networks: list[ipaddress._BaseNetwork],
+) -> dict[str, str] | None:
+    message = raw_message.strip()
+    lower_message = message.lower()
+
+    if (
+        "query from" not in lower_message
+        and "got query from" not in lower_message
+        and "sending reply to" not in lower_message
+        and "question:" not in lower_message
+    ):
+        return None
+
+    direct_match = DNS_QUERY_FROM_RE.search(message)
+    if direct_match:
+        item = build_dns_query_item(
+            router_ip=router_ip,
+            client_ip=direct_match.group("client_ip"),
+            domain=direct_match.group("domain"),
+            record_type=direct_match.group("type"),
+            raw_message=message,
+            internal_networks=internal_networks,
+        )
+        if item:
+            logging.info(
+                "DNS query detectada: ip=%s domain=%s type=%s",
+                item["ip"],
+                item["domain"],
+                item["record_type"],
+            )
+        return item
+
+    client_match = DNS_CLIENT_LINE_RE.search(message)
+    if client_match:
+        client_ip = normalize_ip(client_match.group("client_ip"))
+        if client_ip and is_internal_ip(client_ip, internal_networks):
+            DNS_PENDING_CLIENTS[router_ip] = {
+                "ip": client_ip,
+                "created_at": time.time(),
+                "raw": message,
+            }
+        else:
+            DNS_PENDING_CLIENTS.pop(router_ip, None)
+        return None
+
+    question_match = DNS_QUESTION_RE.search(message)
+    if question_match:
+        pending = DNS_PENDING_CLIENTS.get(router_ip)
+        if not pending:
+            return None
+        if time.time() - float(pending.get("created_at", 0)) > 5:
+            DNS_PENDING_CLIENTS.pop(router_ip, None)
+            return None
+
+        raw_joined = f"{pending.get('raw', '')} | {message}"
+        DNS_PENDING_CLIENTS.pop(router_ip, None)
+
+        item = build_dns_query_item(
+            router_ip=router_ip,
+            client_ip=pending.get("ip", ""),
+            domain=question_match.group("domain"),
+            record_type=question_match.group("type"),
+            raw_message=raw_joined,
+            internal_networks=internal_networks,
+        )
+        if item:
+            logging.info(
+                "DNS query detectada: ip=%s domain=%s type=%s",
+                item["ip"],
+                item["domain"],
+                item["record_type"],
+            )
+        return item
+
+    return None
+
+
 def save_dns_query(item: dict[str, str]) -> None:
+    if not normalize_spaces(item.get("ip")):
+        logging.debug("DNS ignorado porque no tiene IP de cliente: %s", item.get("raw_message"))
+        return
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """

@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,18 @@ def mb(value: int | float | None) -> float:
 
 def gb(value: int | float | None) -> float:
     return round(float(value or 0) / (1024 * 1024 * 1024), 2)
+
+
+def ar_datetime(value: Any) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text[:19], fmt).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            continue
+    return text.replace("T", " ")
 
 
 def clean_domain(hostname: str | None) -> str:
@@ -420,7 +433,7 @@ def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]
             "flows": (sent["flows"] if sent else 0) + (received["flows"] if received else 0),
             "main_service": principal_service(ip),
             "main_domain": principal_domain(ip),
-            "last_activity": last_activity,
+            "last_activity": ar_datetime(last_activity),
         }
         rows.append(item)
 
@@ -503,7 +516,7 @@ def device_detail(ip: str) -> dict[str, Any]:
             "sent_mb": mb(sent_bytes),
             "received_mb": mb(received_bytes),
             "total_mb": mb(sent_bytes + received_bytes),
-            "last_activity": last_activity,
+            "last_activity": ar_datetime(last_activity),
         },
         "services": top_services(10, ip),
         "domains": top_domains(10, ip),
@@ -564,7 +577,8 @@ def identified_flow_row(
         domain = ""
         method = "IP only"
     return {
-        "date": row["received_at"],
+        "date": ar_datetime(row["received_at"]),
+        "date_raw": row["received_at"],
         "device": row["src_device_name"] or device_name(row["src_ip"], devices, dns_names),
         "src_ip": row["src_ip"],
         "dst_ip": row["dst_ip"],
@@ -592,13 +606,14 @@ def traffic_rows(filters: dict[str, str]) -> list[dict[str, Any]]:
             continue
         if filters.get("device") and filters["device"].lower() not in row["device"].lower():
             continue
-        if filters.get("from_date") and row["date"][:10] < filters["from_date"]:
+        row_date = row.get("date_raw", row["date"])
+        if filters.get("from_date") and row_date[:10] < filters["from_date"]:
             continue
-        if filters.get("to_date") and row["date"][:10] > filters["to_date"]:
+        if filters.get("to_date") and row_date[:10] > filters["to_date"]:
             continue
 
         key = (
-            row["date"][:16],
+            row_date[:16],
             row["device"],
             row["src_ip"],
             row["dst_ip"],
@@ -608,11 +623,11 @@ def traffic_rows(filters: dict[str, str]) -> list[dict[str, Any]]:
             row["method"],
         )
         if key not in grouped:
-            grouped[key] = {**row, "date": row["date"][:16], "mb": 0, "flows": 0}
+            grouped[key] = {**row, "date": ar_datetime(row_date[:16]), "date_raw": row_date[:16], "mb": 0, "flows": 0}
         grouped[key]["mb"] = round(grouped[key]["mb"] + row["mb"], 2)
         grouped[key]["flows"] += 1
 
-    return sorted(grouped.values(), key=lambda item: item["date"], reverse=True)
+    return sorted(grouped.values(), key=lambda item: item.get("date_raw", item["date"]), reverse=True)
 
 
 def dns_rows() -> tuple[list[dict[str, Any]], bool]:
@@ -648,7 +663,7 @@ def dns_rows() -> tuple[list[dict[str, Any]], bool]:
     devices = load_devices()
     return [
         {
-            "date": row["date"],
+            "date": ar_datetime(row["date"]),
             "device": device_name(row["ip"], devices),
             "ip": row["ip"],
             "domain": row["domain"],
@@ -656,7 +671,7 @@ def dns_rows() -> tuple[list[dict[str, Any]], bool]:
             "service": "DNS",
             "category": category_for("DNS", row["domain"]),
             "queries": row["queries"],
-            "last_query": row["last_query"],
+            "last_query": ar_datetime(row["last_query"]),
         }
         for row in rows
     ], True
@@ -757,10 +772,15 @@ def dns_filter_sql(filters: dict[str, str], schema: dict[str, str]) -> tuple[str
         params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
         params.extend(matching_ips)
 
+    selected_categories = filters.get("categories") or []
+    if selected_categories:
+        placeholders = ",".join("?" for _ in selected_categories)
+        clauses.append(f"{schema['category']} IN ({placeholders})")
+        params.extend(selected_categories)
+
     for key, column in [
         ("domain", schema["domain"]),
         ("clean_domain", schema["clean_domain"]),
-        ("category", schema["category"]),
         ("service", schema["service"]),
     ]:
         value = (filters.get(key) or "").strip()
@@ -847,7 +867,7 @@ def dns_rows_filtered(filters: dict[str, str]) -> tuple[list[dict[str, Any]], bo
         if not has_clear_domain(row_domain):
             continue
         result.append({
-            "date": row["date"],
+            "date": ar_datetime(row["date"]),
             "device": device_name(row_ip, devices),
             "ip": row_ip,
             "domain": row["domain"] or "",
@@ -855,7 +875,7 @@ def dns_rows_filtered(filters: dict[str, str]) -> tuple[list[dict[str, Any]], bo
             "service": row["service"] or "DNS",
             "category": row["category"] or category_for("DNS", row["domain"]),
             "queries": row["queries"],
-            "last_query": row["last_query"],
+            "last_query": ar_datetime(row["last_query"]),
         })
     return result, True
 
@@ -915,7 +935,7 @@ def dns_device_detail(filters: dict[str, str]) -> dict[str, Any] | None:
             "domain": row["domain"] or "",
             "clean_domain": row["clean_domain"] or clean_domain(row["domain"]),
             "queries": row["queries"],
-            "last_seen": row["last_seen"],
+            "last_seen": ar_datetime(row["last_seen"]),
         }
         for row in fetch_rows(
             f"""
@@ -963,7 +983,7 @@ def dns_device_detail(filters: dict[str, str]) -> dict[str, Any] | None:
     ]
     latest_queries = [
         {
-            "date": row["date"],
+            "date": ar_datetime(row["date"]),
             "domain_queried": row["domain"] or "",
             "clean_domain": row["clean_domain"] or clean_domain(row["domain"]),
             "service": row["service"] or "DNS",
@@ -1007,8 +1027,8 @@ def dns_device_detail(filters: dict[str, str]) -> dict[str, Any] | None:
         "summary": {
             "total_queries": total_queries,
             "unique_domains": summary["unique_domains"] if summary else 0,
-            "first_seen": summary["first_seen"] if summary else "",
-            "last_seen": summary["last_seen"] if summary else "",
+            "first_seen": ar_datetime(summary["first_seen"]) if summary else "",
+            "last_seen": ar_datetime(summary["last_seen"]) if summary else "",
         },
         "top_domains": top_domains,
         "top_categories": top_categories,

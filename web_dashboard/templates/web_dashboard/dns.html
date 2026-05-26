@@ -42,6 +42,20 @@
       <label class="form-label">Dominio</label>
       <input class="form-control" name="domain" value="{{ filters.domain }}" placeholder="Ejemplo: whatsapp.net">
     </div>
+    <div class="col-12">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <label class="form-label mb-0">Mostrar categorías</label>
+        <span class="filter-help">Si no marcás ninguna, se muestran todas.</span>
+      </div>
+      <div class="filter-chip-group">
+        {% for item in categories %}
+          <label class="filter-chip">
+            <input type="checkbox" name="categories" value="{{ item }}" {% if item in filters.categories %}checked{% endif %}>
+            <span>{{ item }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </div>
     <div class="col-lg-2 d-grid">
       <button class="btn btn-primary">Filtrar</button>
     </div>

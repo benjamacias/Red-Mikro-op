@@ -1,12 +1,14 @@
 import json
 
 from django.core.paginator import Paginator
+from django.contrib.auth.decorators import login_required
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
 
 from . import services
 
 
+@login_required
 def dashboard(request):
     data = services.dashboard_data()
     return render(
@@ -20,6 +22,7 @@ def dashboard(request):
     )
 
 
+@login_required
 def devices(request):
     search = request.GET.get("q", "").strip()
     sort = request.GET.get("sort", "total")
@@ -31,6 +34,7 @@ def devices(request):
     )
 
 
+@login_required
 def device_detail(request, ip: str):
     data = services.device_detail(ip)
     if not data["device"]["name"] and not data["recent_flows"]:
@@ -42,6 +46,7 @@ def device_detail(request, ip: str):
     )
 
 
+@login_required
 def traffic(request):
     filters = {
         "from_date": request.GET.get("from", "").strip(),
@@ -56,6 +61,7 @@ def traffic(request):
     return render(request, "web_dashboard/traffic.html", {"rows": rows, "filters": filters})
 
 
+@login_required
 def dns(request):
     filters = {
         "q": request.GET.get("q", "").strip(),
@@ -63,7 +69,7 @@ def dns(request):
         "device_ip": request.GET.get("device_ip", "").strip(),
         "domain": request.GET.get("domain", "").strip(),
         "clean_domain": request.GET.get("clean_domain", "").strip(),
-        "category": request.GET.get("category", "").strip(),
+        "categories": [item.strip() for item in request.GET.getlist("categories") if item.strip()],
         "service": request.GET.get("service", "").strip(),
         "date_from": request.GET.get("date_from", "").strip(),
         "date_to": request.GET.get("date_to", "").strip(),
@@ -86,6 +92,7 @@ def dns(request):
     )
 
 
+@login_required
 def dns_summary(request):
     filters = {
         "q": request.GET.get("q", "").strip(),
@@ -93,7 +100,7 @@ def dns_summary(request):
         "device_ip": request.GET.get("device_ip", "").strip(),
         "domain": request.GET.get("domain", "").strip(),
         "clean_domain": request.GET.get("clean_domain", "").strip(),
-        "category": request.GET.get("category", "").strip(),
+        "categories": [item.strip() for item in request.GET.getlist("categories") if item.strip()],
         "service": request.GET.get("service", "").strip(),
         "date_from": request.GET.get("date_from", "").strip(),
         "date_to": request.GET.get("date_to", "").strip(),
@@ -104,6 +111,7 @@ def dns_summary(request):
     return JsonResponse(detail)
 
 
+@login_required
 def exports(request):
     return render(
         request,
@@ -115,6 +123,7 @@ def exports(request):
     )
 
 
+@login_required
 def download_excel(request):
     path = services.excel_path()
     if not path.exists():
@@ -128,6 +137,7 @@ def csv_response(filename: str, content: str) -> HttpResponse:
     return response
 
 
+@login_required
 def download_devices_csv(request):
     rows = services.device_summary(sort="name")
     headers = [
@@ -146,12 +156,14 @@ def download_devices_csv(request):
     return csv_response("dispositivos.csv", services.csv_response_content(rows, headers))
 
 
+@login_required
 def download_traffic_csv(request):
     rows = services.traffic_rows({})
     headers = ["date", "device", "src_ip", "dst_ip", "domain", "service", "category", "method", "mb", "flows"]
     return csv_response("trafico_identificado.csv", services.csv_response_content(rows, headers))
 
 
+@login_required
 def download_dns_csv(request):
     rows, available = services.dns_rows()
     if not available:

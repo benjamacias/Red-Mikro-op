@@ -22,6 +22,14 @@
     .chart-box { height: 280px; }
     .brand-title { display: inline-flex; align-items: baseline; gap: .4rem; }
     .brand-evolving { color: #aeb8c7; font-size: .68rem; font-weight: 500; transform: translateY(.18rem); }
+    .logout-button { width: 100%; border: 0; background: transparent; color: #d9e4f2; text-align: left; padding: .72rem 1rem; border-radius: .45rem; }
+    .logout-button:hover { background: #243653; color: #fff; }
+    .filter-chip-group { display: flex; flex-wrap: wrap; gap: .45rem; }
+    .filter-chip { position: relative; }
+    .filter-chip input { position: absolute; opacity: 0; pointer-events: none; }
+    .filter-chip span { display: inline-flex; align-items: center; min-height: 2.2rem; padding: .45rem .75rem; border: 1px solid #cfd7e3; border-radius: 999px; background: #fff; color: #334155; cursor: pointer; user-select: none; }
+    .filter-chip input:checked + span { background: #243653; border-color: #243653; color: #fff; }
+    .filter-help { color: #6b7788; font-size: .82rem; }
     @media (max-width: 900px) {
       .app-shell { display: block; }
       .sidebar { width: 100%; }
@@ -40,6 +48,13 @@
       <a href="{% url 'dns' %}">DNS</a>
       <a href="{% url 'exports' %}">Exportaciones</a>
     </nav>
+    <div class="mt-4 pt-3 border-top border-secondary">
+      <div class="muted-label text-light opacity-75 mb-2">{{ request.user.username }}</div>
+      <form method="post" action="{% url 'logout' %}">
+        {% csrf_token %}
+        <button class="logout-button" type="submit">Cerrar sesión</button>
+      </form>
+    </div>
   </aside>
   <main class="content p-4">
     {% block content %}{% endblock %}
