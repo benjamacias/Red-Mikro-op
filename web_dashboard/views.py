@@ -1,9 +1,10 @@
 import json
 
-from django.core.paginator import Paginator
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 
 from . import services
 
@@ -109,6 +110,25 @@ def dns_summary(request):
     if not detail:
         return JsonResponse({"detail": None, "message": "No hay dispositivo seleccionado"})
     return JsonResponse(detail)
+
+
+@login_required
+def settings_view(request):
+    if request.method == "POST":
+        try:
+            threshold = services.save_upload_alert_threshold(request.POST.get("upload_alert_threshold_mb", ""))
+            messages.success(request, f"Umbral actualizado a {threshold} MB por hora.")
+            services.evaluate_upload_alerts()
+        except ValueError as exc:
+            messages.error(request, str(exc))
+        return redirect("app_settings")
+
+    return render(request, "web_dashboard/settings.html", services.settings_page_data())
+
+
+@login_required
+def alerts(request):
+    return render(request, "web_dashboard/alerts.html", services.alerts_page_data())
 
 
 @login_required

@@ -1,0 +1,57 @@
+{% extends "web_dashboard/base.html" %}
+{% block title %}Alertas{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h2 class="mb-1">Alertas</h2>
+    <div class="muted-label">Subida alta en la ultima hora. Umbral actual: {{ threshold_mb }} MB/h</div>
+  </div>
+  <a class="btn btn-outline-secondary" href="{% url 'app_settings' %}">Configurar umbral</a>
+</div>
+
+<section class="panel p-3 mb-4">
+  <h3 class="h5 mb-3">Alertas registradas</h3>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+      <tr>
+        <th>Estado</th><th>Dispositivo</th><th>IP</th>
+        <th class="text-end">Observado</th><th class="text-end">Umbral</th>
+        <th>Inicio</th><th>Ultima vez</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for row in alerts %}
+        <tr>
+          <td><span class="badge text-bg-{% if row.status == 'active' %}danger{% else %}secondary{% endif %}">{{ row.status }}</span></td>
+          <td><a href="{% url 'device_detail' row.device_ip %}">{{ row.device_name }}</a></td>
+          <td>{{ row.device_ip }}</td>
+          <td class="text-end fw-semibold">{{ row.observed_mb }} MB</td>
+          <td class="text-end">{{ row.threshold_mb }} MB</td>
+          <td>{{ row.first_seen_at }}</td>
+          <td>{{ row.last_seen_at }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="7">Sin alertas todavia</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel p-3">
+  <h3 class="h5 mb-3">Subida ultima hora</h3>
+  <div class="table-responsive">
+    <table class="table table-sm">
+      <thead><tr><th>Dispositivo</th><th>IP</th><th class="text-end">MB enviados</th><th>Ultima actividad</th></tr></thead>
+      <tbody>
+      {% for row in usage_rows %}
+        <tr><td>{{ row.name }}</td><td>{{ row.ip }}</td><td class="text-end">{{ row.mb }}</td><td>{{ row.last_seen }}</td></tr>
+      {% empty %}
+        <tr><td colspan="4">Sin trafico de subida reciente</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

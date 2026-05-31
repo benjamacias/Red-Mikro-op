@@ -9,6 +9,11 @@
   <a class="btn btn-outline-secondary" href="{% url 'devices' %}">Volver</a>
 </div>
 
+{% if device.active_alert %}
+  <div class="alert alert-danger">
+    Subida alta: {{ device.active_alert.observed_mb }} MB en la ultima hora. Umbral: {{ device.active_alert.threshold_mb }} MB/h.
+  </div>
+{% endif %}
 <div class="row g-3 mb-4">
   <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Total enviado</div><div class="value-lg">{{ device.sent_mb }} MB</div></div></div>
   <div class="col-md-3"><div class="card summary-card p-3"><div class="muted-label">Total recibido</div><div class="value-lg">{{ device.received_mb }} MB</div></div></div>

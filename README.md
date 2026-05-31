@@ -187,7 +187,13 @@ Páginas incluidas:
 - `/devices/<ip>/`: detalle por dispositivo
 - `/traffic/`: tráfico identificado con filtros
 - `/dns/`: DNS por dispositivo si hay datos disponibles
+- `/alerts/`: alertas internas por alto trafico de subida
+- `/settings/`: configuracion del umbral de subida
 - `/exports/`: descargas de Excel y CSV
+
+## Alertas
+
+Las alertas se calculan con los MB enviados por cada dispositivo durante la ultima hora. El umbral se modifica en `/settings/`; por defecto es `1024` MB/h.
 
 ## Excel
 
@@ -205,6 +211,6 @@ Si queda abierto en Excel, Windows puede bloquear la escritura. El collector seg
 - No escribir claves reales en README ni en el código.
 - No subir bases reales con tráfico de clientes, como `data/netflow.db`.
 - No usar usuario admin de MikroTik si no es necesario.
-- Usar usuario API solo lectura.
+- Usar usuario API solo lectura para sincronizar dispositivos.
 - Restringir API por IP.
 - No abrir el puerto `8728` desde internet.

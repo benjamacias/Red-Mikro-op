@@ -272,6 +272,39 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dns_queries_received_at ON dns_queries(received_at)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS traffic_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_ip TEXT NOT NULL,
+                device_name TEXT,
+                threshold_mb REAL NOT NULL,
+                observed_mb REAL NOT NULL,
+                window_started_at TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_alerts_status ON traffic_alerts(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_alerts_device ON traffic_alerts(device_ip)"
+        )
         conn.commit()
 
 

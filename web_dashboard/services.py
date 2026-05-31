@@ -5,7 +5,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,8 @@ import tldextract
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+UPLOAD_ALERT_SETTING_KEY = "upload_alert_threshold_mb_hour"
+DEFAULT_UPLOAD_ALERT_THRESHOLD_MB = 1024.0
 
 
 def resolve_path(value: str, default: str) -> Path:
@@ -32,6 +34,54 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def now_text() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def is_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "si", "y"}
+
+
+def ensure_operational_tables() -> None:
+    path = db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS traffic_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_ip TEXT NOT NULL,
+                device_name TEXT,
+                threshold_mb REAL NOT NULL,
+                observed_mb REAL NOT NULL,
+                window_started_at TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                resolved_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_alerts_status ON traffic_alerts(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_traffic_alerts_device ON traffic_alerts(device_ip)"
+        )
+        conn.commit()
 
 
 def table_exists(name: str) -> bool:
@@ -108,6 +158,13 @@ def looks_like_ip(value: str | None) -> bool:
         return True
     except ValueError:
         return False
+
+
+def normalize_ip(value: Any) -> str | None:
+    try:
+        return str(ipaddress.ip_address(str(value or "").strip()))
+    except ValueError:
+        return None
 
 
 def has_clear_device_name(ip: str, devices: dict[str, dict[str, str]]) -> bool:
@@ -394,6 +451,7 @@ def principal_domain(ip: str) -> str:
 def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]]:
     devices = load_devices()
     dns_names = load_dns_names()
+    alert_map = {row["device_ip"]: row for row in evaluate_upload_alerts()}
     if not table_exists("flows"):
         ips = set(devices)
     else:
@@ -434,6 +492,7 @@ def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]
             "main_service": principal_service(ip),
             "main_domain": principal_domain(ip),
             "last_activity": ar_datetime(last_activity),
+            "active_alert": alert_map.get(ip),
         }
         rows.append(item)
 
@@ -454,6 +513,7 @@ def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]
 
 
 def dashboard_data() -> dict[str, Any]:
+    operational = dashboard_operational_data()
     devices = device_summary(sort="total")[:10]
     services = top_services(10)
     domains = top_domains(10)
@@ -470,12 +530,15 @@ def dashboard_data() -> dict[str, Any]:
             "labels": [row["label"] for row in services],
             "data": [row["mb"] for row in services],
         },
+        **operational,
     }
 
 
 def device_detail(ip: str) -> dict[str, Any]:
     devices = load_devices()
     dns_names = load_dns_names()
+    evaluate_upload_alerts()
+    alert = active_alert_for_device(ip)
     sent = fetch_one(
         "SELECT COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS flows, MAX(received_at) AS last_seen FROM flows WHERE src_ip = ?",
         (ip,),
@@ -517,6 +580,7 @@ def device_detail(ip: str) -> dict[str, Any]:
             "received_mb": mb(received_bytes),
             "total_mb": mb(sent_bytes + received_bytes),
             "last_activity": ar_datetime(last_activity),
+            "active_alert": alert_row(alert) if alert else None,
         },
         "services": top_services(10, ip),
         "domains": top_domains(10, ip),
@@ -1051,6 +1115,225 @@ def dns_page_data(filters: dict[str, str]) -> dict[str, Any]:
         "devices": dns_device_options(),
         "categories": choices["categories"],
         "services": choices["services"],
+    }
+
+
+def get_setting(key: str, default: str) -> str:
+    ensure_operational_tables()
+    row = fetch_one("SELECT value FROM app_settings WHERE key = ?", (key,))
+    return str(row["value"]) if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    ensure_operational_tables()
+    now = now_text()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        conn.commit()
+
+
+def upload_alert_threshold_mb() -> float:
+    raw_value = get_setting(UPLOAD_ALERT_SETTING_KEY, str(DEFAULT_UPLOAD_ALERT_THRESHOLD_MB))
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return DEFAULT_UPLOAD_ALERT_THRESHOLD_MB
+    return value if value > 0 else DEFAULT_UPLOAD_ALERT_THRESHOLD_MB
+
+
+def save_upload_alert_threshold(value: str) -> float:
+    try:
+        threshold = float(str(value).replace(",", "."))
+    except ValueError as exc:
+        raise ValueError("El umbral debe ser un numero valido.") from exc
+    if threshold <= 0:
+        raise ValueError("El umbral debe ser mayor que cero.")
+    set_setting(UPLOAD_ALERT_SETTING_KEY, str(round(threshold, 2)))
+    return round(threshold, 2)
+
+
+def upload_window_start() -> str:
+    return (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+
+
+def upload_usage_last_hour() -> list[dict[str, Any]]:
+    if not table_exists("flows"):
+        return []
+    devices = load_devices()
+    dns_names = load_dns_names()
+    rows = fetch_rows(
+        """
+        SELECT src_ip AS ip, COALESCE(SUM(bytes), 0) AS bytes, MAX(received_at) AS last_seen
+        FROM flows
+        WHERE received_at >= ?
+        GROUP BY src_ip
+        ORDER BY bytes DESC
+        """,
+        (upload_window_start(),),
+    )
+    result = []
+    for row in rows:
+        ip = row["ip"]
+        if not is_internal_ip(ip):
+            continue
+        result.append(
+            {
+                "ip": ip,
+                "name": device_name(ip, devices, dns_names),
+                "mb": mb(row["bytes"]),
+                "bytes": row["bytes"],
+                "last_seen": ar_datetime(row["last_seen"]),
+            }
+        )
+    return result
+
+
+def active_alert_for_device(device_ip: str) -> sqlite3.Row | None:
+    ensure_operational_tables()
+    return fetch_one(
+        """
+        SELECT *
+        FROM traffic_alerts
+        WHERE device_ip = ? AND status = 'active'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (device_ip,),
+    )
+
+
+def evaluate_upload_alerts() -> list[dict[str, Any]]:
+    ensure_operational_tables()
+    threshold = upload_alert_threshold_mb()
+    window_start = upload_window_start()
+    now = now_text()
+    high_devices = [row for row in upload_usage_last_hour() if row["mb"] >= threshold]
+    high_ips = {row["ip"] for row in high_devices}
+
+    with connect() as conn:
+        for row in high_devices:
+            active = conn.execute(
+                """
+                SELECT id
+                FROM traffic_alerts
+                WHERE device_ip = ? AND status = 'active'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (row["ip"],),
+            ).fetchone()
+            if active:
+                conn.execute(
+                    """
+                    UPDATE traffic_alerts
+                    SET device_name = ?, threshold_mb = ?, observed_mb = ?,
+                        window_started_at = ?, last_seen_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (row["name"], threshold, row["mb"], window_start, now, now, active["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO traffic_alerts (
+                        device_ip, device_name, threshold_mb, observed_mb,
+                        window_started_at, first_seen_at, last_seen_at,
+                        status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (row["ip"], row["name"], threshold, row["mb"], window_start, now, now, now, now),
+                )
+
+        active_rows = conn.execute(
+            "SELECT id, device_ip FROM traffic_alerts WHERE status = 'active'"
+        ).fetchall()
+        for active in active_rows:
+            if active["device_ip"] not in high_ips:
+                conn.execute(
+                    """
+                    UPDATE traffic_alerts
+                    SET status = 'resolved', resolved_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, active["id"]),
+                )
+        conn.commit()
+
+    return active_alerts()
+
+
+def alert_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "device_ip": row["device_ip"],
+        "device_name": row["device_name"] or row["device_ip"],
+        "threshold_mb": round(float(row["threshold_mb"] or 0), 2),
+        "observed_mb": round(float(row["observed_mb"] or 0), 2),
+        "window_started_at": ar_datetime(row["window_started_at"]),
+        "first_seen_at": ar_datetime(row["first_seen_at"]),
+        "last_seen_at": ar_datetime(row["last_seen_at"]),
+        "status": row["status"],
+        "resolved_at": ar_datetime(row["resolved_at"]),
+    }
+
+
+def active_alerts() -> list[dict[str, Any]]:
+    ensure_operational_tables()
+    rows = fetch_rows(
+        """
+        SELECT *
+        FROM traffic_alerts
+        WHERE status = 'active'
+        ORDER BY observed_mb DESC, last_seen_at DESC
+        """
+    )
+    return [alert_row(row) for row in rows]
+
+
+def traffic_alerts(limit: int = 200) -> list[dict[str, Any]]:
+    ensure_operational_tables()
+    evaluate_upload_alerts()
+    rows = fetch_rows(
+        """
+        SELECT *
+        FROM traffic_alerts
+        ORDER BY status = 'active' DESC, last_seen_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return [alert_row(row) for row in rows]
+
+
+def dashboard_operational_data() -> dict[str, Any]:
+    alerts = evaluate_upload_alerts()
+    return {
+        "active_alerts": alerts[:5],
+        "active_alert_count": len(alerts),
+        "upload_alert_threshold_mb": upload_alert_threshold_mb(),
+    }
+
+
+def settings_page_data() -> dict[str, Any]:
+    ensure_operational_tables()
+    return {
+        "upload_alert_threshold_mb": upload_alert_threshold_mb(),
+    }
+
+
+def alerts_page_data() -> dict[str, Any]:
+    return {
+        "alerts": traffic_alerts(),
+        "threshold_mb": upload_alert_threshold_mb(),
+        "usage_rows": upload_usage_last_hour()[:20],
     }
 
 
