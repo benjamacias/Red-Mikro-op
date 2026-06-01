@@ -4,6 +4,7 @@ import ipaddress
 import os
 import re
 import sqlite3
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,11 @@ import tldextract
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_ALERT_SETTING_KEY = "upload_alert_threshold_mb_hour"
 DEFAULT_UPLOAD_ALERT_THRESHOLD_MB = 1024.0
+UPLOAD_ALERT_CACHE_TTL_SECONDS = 60
+QUERY_CACHE_TTL_SECONDS = 60
+_PERFORMANCE_INDEXES_READY = False
+_UPLOAD_ALERT_CACHE: dict[str, Any] = {"expires_at": 0.0, "alerts": None}
+_QUERY_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 
 
 def resolve_path(value: str, default: str) -> Path:
@@ -45,6 +51,7 @@ def is_truthy(value: str | None) -> bool:
 
 
 def ensure_operational_tables() -> None:
+    global _PERFORMANCE_INDEXES_READY
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
@@ -81,6 +88,21 @@ def ensure_operational_tables() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_traffic_alerts_device ON traffic_alerts(device_ip)"
         )
+        if not _PERFORMANCE_INDEXES_READY:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'flows'").fetchone():
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flows_received_src ON flows(received_at, src_ip)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flows_src_received ON flows(src_ip, received_at)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flows_dst_received ON flows(dst_ip, received_at)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flows_service ON flows(service)"
+                )
+            _PERFORMANCE_INDEXES_READY = True
         conn.commit()
 
 
@@ -114,6 +136,28 @@ def fetch_one(query: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         return None
     with connect() as conn:
         return conn.execute(query, params).fetchone()
+
+
+def cache_get(key: tuple[Any, ...]) -> Any | None:
+    item = _QUERY_CACHE.get(key)
+    if not item:
+        return None
+    expires_at, value = item
+    if time.monotonic() >= expires_at:
+        _QUERY_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def cache_set(key: tuple[Any, ...], value: Any, ttl: int = QUERY_CACHE_TTL_SECONDS) -> Any:
+    _QUERY_CACHE[key] = (time.monotonic() + ttl, value)
+    return value
+
+
+def cache_delete_prefix(prefix: str) -> None:
+    for key in list(_QUERY_CACHE):
+        if key and key[0] == prefix:
+            _QUERY_CACHE.pop(key, None)
 
 
 def parse_internal_networks() -> list[ipaddress._BaseNetwork]:
@@ -243,6 +287,9 @@ def category_for(service: str | None, domain: str | None = None) -> str:
 
 
 def load_dns_names() -> dict[str, str]:
+    cached = cache_get(("load_dns_names",))
+    if cached is not None:
+        return cached
     names: dict[str, str] = {}
     if table_exists("dns_cache"):
         for row in fetch_rows("SELECT ip, hostname FROM dns_cache WHERE hostname IS NOT NULL"):
@@ -263,7 +310,7 @@ def load_dns_names() -> dict[str, str]:
                 "SELECT answer_ip AS ip, domain AS hostname FROM dns_queries WHERE answer_ip IS NOT NULL AND answer_ip != '' AND domain IS NOT NULL AND domain != ''"
             ):
                 names.setdefault(row["ip"], row["hostname"])
-    return names
+    return cache_set(("load_dns_names",), names)
 
 
 def load_dns_correlations() -> dict[tuple[str, str], str]:
@@ -300,6 +347,9 @@ def load_dns_correlations() -> dict[tuple[str, str], str]:
 
 
 def load_devices() -> dict[str, dict[str, str]]:
+    cached = cache_get(("load_devices",))
+    if cached is not None:
+        return cached
     if not table_exists("devices"):
         return {}
     rows = fetch_rows(
@@ -309,7 +359,7 @@ def load_devices() -> dict[str, dict[str, str]]:
         FROM devices
         """
     )
-    return {row["ip"]: {key: row[key] or "" for key in row.keys()} for row in rows}
+    return cache_set(("load_devices",), {row["ip"]: {key: row[key] or "" for key in row.keys()} for row in rows})
 
 
 def device_name(ip: str, devices: dict[str, dict[str, str]], dns_names: dict[str, str] | None = None) -> str:
@@ -318,6 +368,14 @@ def device_name(ip: str, devices: dict[str, dict[str, str]], dns_names: dict[str
     if dns_names and not is_internal_ip(ip) and dns_names.get(ip):
         return dns_names[ip]
     return ip
+
+
+def clear_device_ips(devices: dict[str, dict[str, str]]) -> list[str]:
+    return sorted(ip for ip in devices if has_clear_device_name(ip, devices))
+
+
+def placeholders(values: list[Any] | tuple[Any, ...]) -> str:
+    return ",".join("?" for _ in values)
 
 
 def flow_columns() -> set[str]:
@@ -329,9 +387,15 @@ def flow_name_expr(column: str, fallback_ip: str) -> str:
     return column if column in columns else fallback_ip
 
 
-def summary_cards() -> dict[str, Any]:
+def summary_cards(devices_count: int | None = None) -> dict[str, Any]:
+    cache_key = ("summary_cards", devices_count)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     if not table_exists("flows"):
-        return {"devices": 0, "total_mb": 0, "total_gb": 0, "flows": 0, "destinations": 0}
+        if devices_count is None:
+            devices_count = len(clear_device_ips(load_devices()))
+        return cache_set(cache_key, {"devices": devices_count, "total_mb": 0, "total_gb": 0, "flows": 0, "destinations": 0})
     row = fetch_one(
         """
         SELECT COUNT(*) AS flows,
@@ -340,18 +404,23 @@ def summary_cards() -> dict[str, Any]:
         FROM flows
         """
     )
-    devices_count = len(device_summary())
+    if devices_count is None:
+        devices_count = len(clear_device_ips(load_devices()))
     total_bytes = row["bytes"] if row else 0
-    return {
+    return cache_set(cache_key, {
         "devices": devices_count,
         "total_mb": mb(total_bytes),
         "total_gb": gb(total_bytes),
         "flows": row["flows"] if row else 0,
         "destinations": row["destinations"] if row else 0,
-    }
+    })
 
 
 def top_services(limit: int = 10, ip: str | None = None) -> list[dict[str, Any]]:
+    cache_key = ("top_services", limit, ip)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     if not table_exists("flows"):
         return []
     where = ""
@@ -370,13 +439,17 @@ def top_services(limit: int = 10, ip: str | None = None) -> list[dict[str, Any]]
         """,
         params + (limit,),
     )
-    return [{"label": row["service"] or "Otro", "bytes": row["bytes"], "mb": mb(row["bytes"]), "flows": row["flows"]} for row in rows]
+    return cache_set(cache_key, [{"label": row["service"] or "Otro", "bytes": row["bytes"], "mb": mb(row["bytes"]), "flows": row["flows"]} for row in rows])
 
 
-def top_domains(limit: int = 10, ip: str | None = None) -> list[dict[str, Any]]:
+def top_domains(limit: int = 10, ip: str | None = None, dns_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    cache_key = ("top_domains", limit, ip)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     if not table_exists("flows"):
         return []
-    dns_names = load_dns_names()
+    dns_names = dns_names if dns_names is not None else load_dns_names()
     where = ""
     params: tuple[Any, ...] = ()
     if ip:
@@ -407,14 +480,19 @@ def top_domains(limit: int = 10, ip: str | None = None) -> list[dict[str, Any]]:
         {"domain": domain, "bytes": data["bytes"], "mb": mb(data["bytes"]), "flows": data["flows"], "method": data["method"]}
         for domain, data in grouped.items()
     ]
-    return sorted(items, key=lambda item: item["bytes"], reverse=True)[:limit]
+    return cache_set(cache_key, sorted(items, key=lambda item: item["bytes"], reverse=True)[:limit])
 
 
-def top_destinations(ip: str, limit: int = 10) -> list[dict[str, Any]]:
+def top_destinations(
+    ip: str,
+    limit: int = 10,
+    devices: dict[str, dict[str, str]] | None = None,
+    dns_names: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     if not table_exists("flows"):
         return []
-    devices = load_devices()
-    dns_names = load_dns_names()
+    devices = devices if devices is not None else load_devices()
+    dns_names = dns_names if dns_names is not None else load_dns_names()
     rows = fetch_rows(
         """
         SELECT dst_ip, COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS flows
@@ -448,38 +526,122 @@ def principal_domain(ip: str) -> str:
     return domains[0]["domain"] if domains else ""
 
 
-def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]]:
+def device_flow_totals(ips: list[str]) -> dict[str, dict[str, Any]]:
+    totals = {
+        ip: {"sent_bytes": 0, "received_bytes": 0, "sent_flows": 0, "received_flows": 0, "last_activity": ""}
+        for ip in ips
+    }
+    if not ips or not table_exists("flows"):
+        return totals
+
+    marker = placeholders(ips)
+    sent_rows = fetch_rows(
+        f"""
+        SELECT src_ip AS ip, COALESCE(SUM(bytes), 0) AS bytes,
+               COUNT(*) AS flows, MAX(received_at) AS last_seen
+        FROM flows
+        WHERE src_ip IN ({marker})
+        GROUP BY src_ip
+        """,
+        tuple(ips),
+    )
+    received_rows = fetch_rows(
+        f"""
+        SELECT dst_ip AS ip, COALESCE(SUM(bytes), 0) AS bytes,
+               COUNT(*) AS flows, MAX(received_at) AS last_seen
+        FROM flows
+        WHERE dst_ip IN ({marker})
+        GROUP BY dst_ip
+        """,
+        tuple(ips),
+    )
+    for row in sent_rows:
+        total = totals[row["ip"]]
+        total["sent_bytes"] = row["bytes"] or 0
+        total["sent_flows"] = row["flows"] or 0
+        total["last_activity"] = max(total["last_activity"], row["last_seen"] or "")
+    for row in received_rows:
+        total = totals[row["ip"]]
+        total["received_bytes"] = row["bytes"] or 0
+        total["received_flows"] = row["flows"] or 0
+        total["last_activity"] = max(total["last_activity"], row["last_seen"] or "")
+    return totals
+
+
+def principal_services_for_devices(ips: list[str]) -> dict[str, str]:
+    if not ips or not table_exists("flows"):
+        return {}
+    marker = placeholders(ips)
+    rows = fetch_rows(
+        f"""
+        SELECT ip, service, COALESCE(SUM(bytes), 0) AS bytes
+        FROM (
+            SELECT src_ip AS ip, service, bytes FROM flows WHERE src_ip IN ({marker})
+            UNION ALL
+            SELECT dst_ip AS ip, service, bytes FROM flows WHERE dst_ip IN ({marker})
+        )
+        GROUP BY ip, service
+        """,
+        tuple(ips) + tuple(ips),
+    )
+    best: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        current = best.get(row["ip"])
+        if current is None or (row["bytes"] or 0) > (current["bytes"] or 0):
+            best[row["ip"]] = row
+    return {ip: (row["service"] or "Otro") for ip, row in best.items()}
+
+
+def principal_domains_for_devices(ips: list[str], dns_names: dict[str, str]) -> dict[str, str]:
+    if not ips or not table_exists("flows"):
+        return {}
+    marker = placeholders(ips)
+    rows = fetch_rows(
+        f"""
+        SELECT ip, dst_ip, COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS flows
+        FROM (
+            SELECT src_ip AS ip, dst_ip, bytes FROM flows WHERE src_ip IN ({marker})
+            UNION ALL
+            SELECT dst_ip AS ip, dst_ip, bytes FROM flows WHERE dst_ip IN ({marker})
+        )
+        GROUP BY ip, dst_ip
+        """,
+        tuple(ips) + tuple(ips),
+    )
+    best: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        hostname = dns_names.get(row["dst_ip"], "")
+        domain = clean_domain(hostname) or row["dst_ip"]
+        if not has_clear_summary_domain(domain):
+            continue
+        current = best.get(row["ip"])
+        if current is None or (row["bytes"] or 0) > current["bytes"]:
+            best[row["ip"]] = {"domain": domain, "bytes": row["bytes"] or 0}
+    return {ip: data["domain"] for ip, data in best.items()}
+
+
+def device_summary(
+    search: str = "",
+    sort: str = "total",
+    dns_names: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    cache_key = ("device_summary", search, sort)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     devices = load_devices()
-    dns_names = load_dns_names()
-    alert_map = {row["device_ip"]: row for row in evaluate_upload_alerts()}
-    if not table_exists("flows"):
-        ips = set(devices)
-    else:
-        flow_ips = {
-            row["ip"]
-            for row in fetch_rows("SELECT src_ip AS ip FROM flows UNION SELECT dst_ip AS ip FROM flows")
-            if is_internal_ip(row["ip"])
-        }
-        ips = set(devices) | flow_ips
+    dns_names = dns_names if dns_names is not None else load_dns_names()
+    alert_map = {row["device_ip"]: row for row in active_alerts()}
+    ips = clear_device_ips(devices)
+    totals = device_flow_totals(ips)
+    services = principal_services_for_devices(ips)
+    domains = principal_domains_for_devices(ips, dns_names)
 
     rows = []
     for ip in ips:
-        sent = fetch_one(
-            "SELECT COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS flows, MAX(received_at) AS last_seen FROM flows WHERE src_ip = ?",
-            (ip,),
-        )
-        received = fetch_one(
-            "SELECT COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS flows, MAX(received_at) AS last_seen FROM flows WHERE dst_ip = ?",
-            (ip,),
-        )
-        sent_bytes = sent["bytes"] if sent else 0
-        received_bytes = received["bytes"] if received else 0
-        last_activity = max(
-            [value for value in [sent["last_seen"] if sent else None, received["last_seen"] if received else None] if value],
-            default="",
-        )
-        if not has_clear_device_name(ip, devices):
-            continue
+        total = totals[ip]
+        sent_bytes = total["sent_bytes"]
+        received_bytes = total["received_bytes"]
         item = {
             "name": device_name(ip, devices, dns_names),
             "ip": ip,
@@ -488,10 +650,10 @@ def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]
             "sent_mb": mb(sent_bytes),
             "received_mb": mb(received_bytes),
             "total_mb": mb(sent_bytes + received_bytes),
-            "flows": (sent["flows"] if sent else 0) + (received["flows"] if received else 0),
-            "main_service": principal_service(ip),
-            "main_domain": principal_domain(ip),
-            "last_activity": ar_datetime(last_activity),
+            "flows": total["sent_flows"] + total["received_flows"],
+            "main_service": services.get(ip, ""),
+            "main_domain": domains.get(ip, ""),
+            "last_activity": ar_datetime(total["last_activity"]),
             "active_alert": alert_map.get(ip),
         }
         rows.append(item)
@@ -509,16 +671,21 @@ def device_summary(search: str = "", sort: str = "total") -> list[dict[str, Any]
         "total": lambda row: row["total_mb"],
     }.get(sort, lambda row: row["total_mb"])
     rows.sort(key=sort_key, reverse=sort != "name")
-    return rows
+    return cache_set(cache_key, rows)
 
 
 def dashboard_data() -> dict[str, Any]:
+    cached = cache_get(("dashboard_data",))
+    if cached is not None:
+        return cached
     operational = dashboard_operational_data()
-    devices = device_summary(sort="total")[:10]
+    dns_names = load_dns_names()
+    all_devices = device_summary(sort="total", dns_names=dns_names)
+    devices = all_devices[:10]
     services = top_services(10)
-    domains = top_domains(10)
-    return {
-        "cards": summary_cards(),
+    domains = top_domains(10, dns_names=dns_names)
+    return cache_set(("dashboard_data",), {
+        "cards": summary_cards(devices_count=len(all_devices)),
         "top_devices": devices,
         "top_services": services,
         "top_domains": domains,
@@ -531,7 +698,7 @@ def dashboard_data() -> dict[str, Any]:
             "data": [row["mb"] for row in services],
         },
         **operational,
-    }
+    })
 
 
 def device_detail(ip: str) -> dict[str, Any]:
@@ -553,7 +720,7 @@ def device_detail(ip: str) -> dict[str, Any]:
         [value for value in [sent["last_seen"] if sent else None, received["last_seen"] if received else None] if value],
         default="",
     )
-    movement_rows = recent_flows(ip=ip, limit=50)
+    movement_rows = recent_flows(ip=ip, limit=50, devices=devices, dns_names=dns_names)
     hourly_rows = fetch_rows(
         """
         SELECT substr(received_at, 1, 13) || ':00' AS period,
@@ -567,6 +734,8 @@ def device_detail(ip: str) -> dict[str, Any]:
         (ip, ip),
     )
     hourly = list(reversed([{"label": row["period"], "mb": mb(row["bytes"])} for row in hourly_rows]))
+    services = top_services(10, ip)
+    domains = top_domains(10, ip, dns_names=dns_names)
     return {
         "device": {
             "name": device_name(ip, devices, dns_names),
@@ -582,25 +751,31 @@ def device_detail(ip: str) -> dict[str, Any]:
             "last_activity": ar_datetime(last_activity),
             "active_alert": alert_row(alert) if alert else None,
         },
-        "services": top_services(10, ip),
-        "domains": top_domains(10, ip),
-        "destinations": top_destinations(ip, 10),
+        "services": services,
+        "domains": domains,
+        "destinations": top_destinations(ip, 10, devices=devices, dns_names=dns_names),
         "recent_flows": movement_rows,
         "charts": {
-            "services": {"labels": [row["label"] for row in top_services(10, ip)], "data": [row["mb"] for row in top_services(10, ip)]},
-            "domains": {"labels": [row["domain"] for row in top_domains(10, ip)], "data": [row["mb"] for row in top_domains(10, ip)]},
+            "services": {"labels": [row["label"] for row in services], "data": [row["mb"] for row in services]},
+            "domains": {"labels": [row["domain"] for row in domains], "data": [row["mb"] for row in domains]},
             "hourly": {"labels": [row["label"] for row in hourly], "data": [row["mb"] for row in hourly]},
             "sent_received": {"labels": ["Enviado", "Recibido"], "data": [mb(sent_bytes), mb(received_bytes)]},
         },
     }
 
 
-def recent_flows(ip: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def recent_flows(
+    ip: str | None = None,
+    limit: int = 100,
+    devices: dict[str, dict[str, str]] | None = None,
+    dns_names: dict[str, str] | None = None,
+    dns_correlations: dict[tuple[str, str], str] | None = None,
+) -> list[dict[str, Any]]:
     if not table_exists("flows"):
         return []
-    devices = load_devices()
-    dns_names = load_dns_names()
-    dns_correlations = load_dns_correlations()
+    devices = devices if devices is not None else load_devices()
+    dns_names = dns_names if dns_names is not None else load_dns_names()
+    dns_correlations = dns_correlations if dns_correlations is not None else load_dns_correlations()
     where = ""
     params: tuple[Any, ...] = ()
     if ip:
@@ -1156,6 +1331,8 @@ def save_upload_alert_threshold(value: str) -> float:
     if threshold <= 0:
         raise ValueError("El umbral debe ser mayor que cero.")
     set_setting(UPLOAD_ALERT_SETTING_KEY, str(round(threshold, 2)))
+    invalidate_upload_alert_cache()
+    cache_delete_prefix("dashboard_data")
     return round(threshold, 2)
 
 
@@ -1166,18 +1343,21 @@ def upload_window_start() -> str:
 def upload_usage_last_hour() -> list[dict[str, Any]]:
     if not table_exists("flows"):
         return []
-    devices = load_devices()
-    dns_names = load_dns_names()
+    ensure_operational_tables()
     rows = fetch_rows(
         """
         SELECT src_ip AS ip, COALESCE(SUM(bytes), 0) AS bytes, MAX(received_at) AS last_seen
-        FROM flows
+        FROM flows INDEXED BY idx_flows_received_src
         WHERE received_at >= ?
         GROUP BY src_ip
         ORDER BY bytes DESC
         """,
         (upload_window_start(),),
     )
+    if not rows:
+        return []
+    devices = load_devices()
+    dns_names = load_dns_names()
     result = []
     for row in rows:
         ip = row["ip"]
@@ -1209,7 +1389,16 @@ def active_alert_for_device(device_ip: str) -> sqlite3.Row | None:
     )
 
 
-def evaluate_upload_alerts() -> list[dict[str, Any]]:
+def invalidate_upload_alert_cache() -> None:
+    _UPLOAD_ALERT_CACHE["expires_at"] = 0.0
+    _UPLOAD_ALERT_CACHE["alerts"] = None
+
+
+def evaluate_upload_alerts(force: bool = False) -> list[dict[str, Any]]:
+    cached_alerts = _UPLOAD_ALERT_CACHE.get("alerts")
+    if not force and cached_alerts is not None and time.monotonic() < float(_UPLOAD_ALERT_CACHE["expires_at"]):
+        return cached_alerts
+
     ensure_operational_tables()
     threshold = upload_alert_threshold_mb()
     window_start = upload_window_start()
@@ -1267,7 +1456,12 @@ def evaluate_upload_alerts() -> list[dict[str, Any]]:
                 )
         conn.commit()
 
-    return active_alerts()
+    alerts = active_alerts()
+    _UPLOAD_ALERT_CACHE["alerts"] = alerts
+    _UPLOAD_ALERT_CACHE["expires_at"] = time.monotonic() + UPLOAD_ALERT_CACHE_TTL_SECONDS
+    cache_delete_prefix("dashboard_data")
+    cache_delete_prefix("device_summary")
+    return alerts
 
 
 def alert_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1300,7 +1494,7 @@ def active_alerts() -> list[dict[str, Any]]:
 
 def traffic_alerts(limit: int = 200) -> list[dict[str, Any]]:
     ensure_operational_tables()
-    evaluate_upload_alerts()
+    evaluate_upload_alerts(force=True)
     rows = fetch_rows(
         """
         SELECT *

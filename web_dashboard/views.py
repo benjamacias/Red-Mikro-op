@@ -118,7 +118,7 @@ def settings_view(request):
         try:
             threshold = services.save_upload_alert_threshold(request.POST.get("upload_alert_threshold_mb", ""))
             messages.success(request, f"Umbral actualizado a {threshold} MB por hora.")
-            services.evaluate_upload_alerts()
+            services.evaluate_upload_alerts(force=True)
         except ValueError as exc:
             messages.error(request, str(exc))
         return redirect("app_settings")
